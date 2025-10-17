@@ -70,28 +70,24 @@ async function getMisskeyMeta(env: Env, host: string) {
   await env.FEDIOAUTH_KV.put(kvKey, JSON.stringify(meta), { expirationTtl: 86400 });
   return meta;
 }
+// 교체: ap/show 호출 함수
 async function getApShow(env: Env, host: string, apUri: string) {
-  const memKey = `${host}|${apUri}`;
-  if (apMem.has(memKey)) return apMem.get(memKey);
-
   const digest = await sha256Hex(apUri);
-  const kvKey = `mk:note:${host}:${digest}`;
-  const cached = await env.FEDIOAUTH_KV.get(kvKey);
-  if (cached) {
-    try { const v = JSON.parse(cached); apMem.set(memKey, v); return v; } catch {}
-  }
+  const key = `mk:note:${host}:${digest}`;
+  const cached = await env.FEDIOAUTH_KV.get(key);
+  if (cached) { try { return { status: 200, data: JSON.parse(cached) }; } catch {} }
 
-  const res = await fetchWithTimeout(`https://${host}/api/ap/show`, {
+  const res = await fetch(`https://${host}/api/ap/show`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ uri: apUri }),
   });
-  if (!res.ok) return null;
+
+  if (!res.ok) return { status: res.status, data: null };
 
   const data = await res.json();
-  apMem.set(memKey, data);
-  await env.FEDIOAUTH_KV.put(kvKey, JSON.stringify(data), { expirationTtl: 120 });
-  return data;
+  await env.FEDIOAUTH_KV.put(key, JSON.stringify(data), { expirationTtl: 120 });
+  return { status: 200, data };
 }
 
 function parseMkReactionKey(key: string) {
@@ -115,6 +111,34 @@ function resolveEmojiUrlFromApTag(apObject: any, name: string): string | null {
   }
   return null;
 }
+
+function extractMisskeyNoteIdFromApUri(apUri: string): string | null {
+  try {
+    const u = new URL(apUri);
+    const m = u.pathname.match(/^\/notes\/([a-zA-Z0-9]+)/);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
+async function getNotesShow(env: Env, host: string, noteId: string) {
+  const key = `mk:note:byid:${host}:${noteId}`;
+  const cached = await env.FEDIOAUTH_KV.get(key);
+  if (cached) { try { return { status: 200, data: JSON.parse(cached) }; } catch {} }
+
+  const res = await fetch(`https://${host}/api/notes/show`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ noteId }),
+  });
+
+  if (!res.ok) return { status: res.status, data: null };
+
+  const data = await res.json();
+  await env.FEDIOAUTH_KV.put(key, JSON.stringify(data), { expirationTtl: 120 });
+  return { status: 200, data };
+}
+
+
 function looksClearlyMastodonHost(host: string) {
   // 아주 러프한 스킵 규칙: mastodon/pleroma/akkoma 등은 Misskey 아님
   return /mastodon|pleroma|akkoma/i.test(host);
@@ -162,33 +186,46 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   for (const st of statuses) {
     try {
       const apUri: string | undefined = st?.reblog?.uri || st?.uri;
-      if (!apUri || !/^https?:\/\//i.test(apUri)) {
-        if (debug) st._mkDebug = { stage: "skip_no_ap_uri", uri: st?.uri, reblogUri: st?.reblog?.uri };
-        continue;
-      }
+      if (!apUri || !/^https?:\/\//i.test(apUri)) { if (debug) st._mkDebug = { stage: "skip_no_ap_uri" }; continue; }
       const originHost = new URL(apUri).host;
-      triedCount++;
 
-      // ap/show 조회
-      const ap = await getApShow(env, originHost, apUri);
-      const obj = ap?.object || ap;
-      if (!obj) { if (debug) st._mkDebug = { stage: "no_ap_object", apUri, host: originHost }; continue; }
+      // 1) ap/show 먼저 시도
+      let apShowResp = await getApShow(env, originHost, apUri);
+      let obj = apShowResp.data?.object || apShowResp.data || null;
 
+      // 2) ap/show 실패(예: 401) → notes/show 폴백
+      if (!obj) {
+        const noteId = extractMisskeyNoteIdFromApUri(apUri);
+        if (noteId) {
+          const { status, data } = await getNotesShow(env, originHost, noteId);
+          if (status === 200 && data) {
+            obj = data; // notes/show는 note 객체를 바로 반환
+            if (debug) st._mkDebug = { stage: "fallback_notes_show_ok", apUri, host: originHost, noteId };
+          } else if (debug) {
+            st._mkDebug = { stage: "no_ap_object_and_notes_show_failed", apUri, host: originHost, noteId, status };
+          }
+        } else if (debug) {
+          st._mkDebug = { stage: "no_ap_object_no_noteid", apUri, host: originHost, apShowStatus: apShowResp.status };
+        }
+      }
+
+      if (!obj) continue;
+
+      // 3) 리액션 추출 (여러 변형 지원)
       const reactions =
         obj?.reactions ||
         obj?.reactionCounts ||
-        ap?.reactions ||
-        ap?.reactionCounts ||
         null;
 
       if (!reactions || typeof reactions !== "object") {
-        if (debug) st._mkDebug = { stage: "no_reactions", apUri, host: originHost };
+        if (debug) st._mkDebug = { ...(st._mkDebug||{}), stage: "no_reactions", keys: Object.keys(obj||{}) };
         continue;
       }
 
-      const meta = await getMisskeyMeta(env, originHost).catch(() => null);
-
+      // 4) 이모지 URL 해상 (meta + AP tag)
+      const meta = await getMisskeyMeta(env, originHost).catch(()=>null);
       const out: Array<{ name: string; url: string|null; count: number }> = [];
+
       for (const k of Object.keys(reactions)) {
         const count = reactions[k] ?? 0;
         if (!count) continue;
@@ -197,32 +234,22 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
           out.push({ name, url: null, count });
         } else {
           const url1 = meta ? resolveEmojiUrlFromMeta(meta, name) : null;
-          const url2 = resolveEmojiUrlFromApTag(obj, name);
+          const url2 = resolveEmojiUrlFromApTag(obj, name); // obj에 tag가 있으면 그걸로도 해상
           out.push({ name, url: url1 || url2 || null, count });
         }
       }
 
       if (out.length) {
         st._mkReactions = out;
-        mergedCount++;
-        if (debug) st._mkDebug = {
-          stage: "ok",
-          apUri, host: originHost,
-          keys: Object.keys(reactions),
-          merged: out.length
-        };
-      } else {
-        if (debug) st._mkDebug = {
-          stage: "empty_after_parse",
-          apUri, host: originHost,
-          keys: Object.keys(reactions)
-        };
+        if (debug) st._mkDebug = { ...(st._mkDebug||{}), stage: (st._mkDebug?.stage ?? "ok"), merged: out.length };
+      } else if (debug) {
+        st._mkDebug = { ...(st._mkDebug||{}), stage: "empty_after_parse", keys: Object.keys(reactions) };
       }
     } catch (e: any) {
-      errorCount++;
       if (debug) st._mkDebug = { stage: "error", message: String(e) };
     }
   }
+
 
   const body = JSON.stringify({ items: statuses, next_max_id });
   return new Response(body, {
