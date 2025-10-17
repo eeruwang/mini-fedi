@@ -88,9 +88,17 @@ function getCookie(name) {
 }
 async function jfetch(url, opts = {}) {
   const r = await fetch(url, { credentials: 'include', ...opts });
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  return r.json();
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    const err = new Error(`${r.status} ${r.statusText}`);
+    // @ts-ignore - 편의상 속성 추가
+    err.status = r.status; err.body = text;
+    throw err;
+  }
+  const ct = r.headers.get('content-type') || '';
+  return ct.includes('application/json') ? r.json() : r.text();
 }
+
 
 /* =========================
    Theme toggle
@@ -297,25 +305,60 @@ let cursor = null; // Masto: max_id, Misskey: untilId
 let source = null; // 'masto' | 'misskey'
 let activeHost = null;
 
+function hasMastoCookies() {
+  return !!getCookie('ap_token') && !!getCookie('ap_inst');
+}
+function hasMisskeyCookies() {
+  return !!getCookie('mk_token') && !!getCookie('mk_host');
+}
+
 async function loadMe() {
-  try {
+  // 쿠키 힌트로 우선 순위 결정(있을 확률 높은 쪽 먼저)
+  const preferMasto = hasMastoCookies();
+  const preferMisskey = hasMisskeyCookies();
+
+  const tryMasto = async () => {
     const me = await jfetch('/api/me');
     source = 'masto';
     activeHost = getCookie('ap_inst') || '';
     document.getElementById('acct').textContent = me?.acct ? `@${me.acct}` : me?.username || 'Mastodon';
-    return { source };
-  } catch {
+    return 'masto';
+  };
+  const tryMisskey = async () => {
     const me = await jfetch('/api/mk/me');
     source = 'misskey';
     activeHost = getCookie('mk_host') || '';
     document.getElementById('acct').textContent = me?.username ? `@${me.username}` : 'Misskey';
-    return { source };
+    return 'misskey';
+  };
+
+  try {
+    if (preferMasto) return await tryMasto();
+    if (preferMisskey) return await tryMisskey();
+    // 쿠키 힌트 없으면 Mastodon 먼저
+    return await tryMasto();
+  } catch {
+    try {
+      // 첫 시도 실패하면 다른 쪽 시도
+      if (source !== 'misskey') return await tryMisskey();
+      return await tryMasto();
+    } catch (e) {
+      // 둘 다 실패 → 로그인 페이지로
+      source = null;
+      alert('세션이 만료되었거나 로그인 정보가 없습니다. 다시 로그인해 주세요.');
+      location.href = '/';
+      throw e;
+    }
   }
 }
 
+
+let io; // observer 핸들
+
 async function loadPage(initial=false) {
-  if (isLoading) return;
+  if (isLoading || !source) return;
   isLoading = true;
+
   try {
     const path = mode === 'fav'
       ? (source === 'masto' ? '/api/favourites' : '/api/mk/home?favourites=1')
@@ -323,10 +366,11 @@ async function loadPage(initial=false) {
 
     const u = new URL(path, location.origin);
     if (cursor) {
-      if (source === 'masto') u.searchParams.set('max_id', cursor);
-      else u.searchParams.set('untilId', cursor);
+      source === 'masto' ? u.searchParams.set('max_id', cursor)
+                         : u.searchParams.set('untilId', cursor);
     }
     const data = await jfetch(u.toString());
+
     const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
     for (const post of items) {
       const html = await renderPostHTML(post, { source });
@@ -334,17 +378,29 @@ async function loadPage(initial=false) {
       div.innerHTML = html;
       feedEl.appendChild(div.firstElementChild);
     }
-    if (source === 'masto') {
-      cursor = data?.next_max_id || (items.length ? items[items.length - 1]?.id : null);
-    } else {
-      cursor = data?.next || (items.length ? items[items.length - 1]?.id : null);
-    }
+    cursor = (source === 'masto')
+      ? (data?.next_max_id || (items.length ? items[items.length-1]?.id : null))
+      : (data?.next || (items.length ? items[items.length-1]?.id : null));
   } catch (e) {
-    console.error(e);
+    // @ts-ignore
+    if (e?.status === 401) {
+      // Misskey 401이면 Misskey만 만료된 케이스 가능 → Mastodon 쿠키가 있으면 전환 시도
+      if (source === 'misskey' && hasMastoCookies()) {
+        console.warn('Misskey 401: Mastodon으로 자동 전환합니다.');
+        source = 'masto'; cursor = null; feedEl.innerHTML = '';
+        await loadPage(true);
+      } else {
+        alert('세션이 만료되었습니다. 다시 로그인해 주세요.');
+        if (io?.disconnect) io.disconnect();
+      }
+    } else {
+      console.error(e);
+    }
   } finally {
     isLoading = false;
   }
 }
+
 
 /* =========================
    UI bindings
@@ -366,9 +422,14 @@ document.getElementById('logout').addEventListener('click', async () => {
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
 // infinite scroll
-new IntersectionObserver(async (entries) => {
-  for (const e of entries) if (e.isIntersecting) await loadPage();
-}, { rootMargin: '600px' }).observe(document.getElementById('sentinel'));
+// infinite scroll (disconnect 지원)
+let io;
+io = new IntersectionObserver(async (entries) => {
+  for (const e of entries) {
+    if (e.isIntersecting) await loadPage();
+  }
+}, { rootMargin: '600px' });
+io.observe(document.getElementById('sentinel'));
 
 // init
 (async function init() {
