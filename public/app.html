@@ -236,6 +236,11 @@ async function renderPostHTML(post, opts) {
     }
     reactionsHTML += `<span class="badge">💬 ${replies}</span><span class="badge">♺ ${boosts}</span><span class="badge">⭐ ${faves}</span>`;
 
+    const debugOn = new URL(location.href).searchParams.get('debug') === '1';
+    const debugHTML = (debugOn && post?._mkDebug)
+      ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(post._mkDebug, null, 2))}</pre>`
+      : '';
+
     return `
       <article class="post">
         <div class="post-head">
