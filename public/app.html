@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fedi Viewer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-dvh bg-neutral-50">
+  <header class="sticky top-0 z-10 bg-white/70 backdrop-blur-md border-b shadow-sm">
+    <div class="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3 justify-between">
+      <div id="who" class="font-medium">Loading…</div>
+      <div class="flex gap-2">
+        <button id="btnHome"   class="px-3 py-1.5 rounded-xl border bg-white">홈</button>
+        <button id="btnFav"    class="px-3 py-1.5 rounded-xl border bg-white">좋아요</button>
+        <button id="btnLogout" class="px-3 py-1.5 rounded-xl border bg-white">로그아웃</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-3xl mx-auto px-4 py-6">
+    <div id="stats" class="flex gap-6 text-sm text-neutral-600"></div>
+    <div id="feed" class="mt-4 space-y-3"></div>
+    <div id="sentinel" class="h-10"></div>
+  </main>
+
+  <script>
+    function esc(s){
+      if (typeof s !== 'string') return ''
+      return s.replace(/[&<>"']/g, c => (
+        c === '&' ? '&amp;' :
+        c === '<' ? '&lt;'  :
+        c === '>' ? '&gt;'  :
+        c === '"' ? '&quot;': '&#39;'
+      ))
+    }
+    function reactionsRowMK(reactions){
+      if (!reactions) return ''
+      const items = Object.entries(reactions).map(([k,v]) =>
+        `<span class="px-2 py-1 rounded-lg border bg-white">${esc(k)} ${v}</span>`)
+      return items.length ? `<div class="flex flex-wrap gap-1 mt-2">${items.join('')}</div>` : ''
+    }
+
+    const who = document.getElementById('who')
+    const stats = document.getElementById('stats')
+    const feed = document.getElementById('feed')
+    const btnHome = document.getElementById('btnHome')
+    const btnFav = document.getElementById('btnFav')
+    const btnLogout = document.getElementById('btnLogout')
+    const sentinel = document.getElementById('sentinel')
+
+    let kind = 'md'      // 'md' | 'mk'
+    let loading = false
+    let done = false     // 더 불러올 게 없는지
+    let paging = {       // 페이지네이션 커서
+      md: { max_id: null, since_id: null },
+      mk: { untilId: null, sinceId: null }
+    }
+
+    async function detectKind(){
+      let r = await fetch('/api/me'); if (r.ok) return 'md'
+      r = await fetch('/api/mk/me'); if (r.ok) return 'mk'
+      location.href = '/'
+    }
+
+    // --- Mastodon 렌더 ---
+    function renderMeMD(m){
+      who.textContent = `${m.display_name || m.username} (@${m.acct})`
+      stats.innerHTML =
+        `<div>팔로워 <b>${m.followers_count}</b></div>
+         <div>팔로잉 <b>${m.following_count}</b></div>
+         <div>포스트 <b>${m.statuses_count}</b></div>`
+    }
+    function renderStatusesMD(list, { append=false } = {}){
+      if (!append) feed.innerHTML = ''
+      for (const s of list){
+        const a = s.account
+        const time = new Date(s.created_at).toLocaleString()
+        const counts = `🔁 ${s.reblogs_count} · ⭐ ${s.favourites_count} · 💬 ${s.replies_count}`
+        const card = document.createElement('article')
+        card.className = 'bg-white border rounded-2xl p-4'
+        card.innerHTML =
+          `<div class="text-sm text-neutral-600 mb-2">${esc(a.display_name||a.username)} (@${esc(a.acct)}) · <time>${time}</time> · ${counts}</div>
+           <div class="prose max-w-none">${s.content||''}</div>
+           ${s.mkReactions ? reactionsRowMK(s.mkReactions) : ''}`
+        feed.appendChild(card)
+      }
+      if (!list.length && !append) feed.innerHTML = `<div class="bg-white border rounded-2xl p-4">표시할 항목이 없습니다.</div>`
+    }
+
+    // --- Misskey 렌더 ---
+    function renderMeMK(me){
+      who.textContent = `${me.name || me.username} (@${me.username})`
+      stats.innerHTML =
+        `<div>팔로워 <b>${me.followersCount}</b></div>
+         <div>팔로잉 <b>${me.followingCount}</b></div>
+         <div>노트 <b>${me.notesCount}</b></div>`
+    }
+    function renderStatusesMK(list, { append=false } = {}){
+      if (!append) feed.innerHTML = ''
+      for (const n of list){
+        const a = n.user || {}
+        const time = new Date(n.createdAt).toLocaleString()
+        const textHtml = (n.text || '').replace(/\n/g,'<br>')
+        const card = document.createElement('article')
+        card.className = 'bg-white border rounded-2xl p-4'
+        card.innerHTML =
+          `<div class="text-sm text-neutral-600 mb-2">${esc(a.name||a.username)} (@${esc(a.username)}) · <time>${time}</time></div>
+           <div class="prose max-w-none">${textHtml}</div>
+           ${reactionsRowMK(n.reactions)}`
+        feed.appendChild(card)
+      }
+      if (!list.length && !append) feed.innerHTML = `<div class="bg-white border rounded-2xl p-4">표시할 항목이 없습니다.</div>`
+    }
+
+    // --- 데이터 로더 ---
+    async function loadMD({ reset=false } = {}){
+      try {
+        if (reset) {
+          feed.innerHTML = ''
+          done = false
+          paging.md = { max_id: null, since_id: null }
+          const meR = await fetch('/api/me'); if (!meR.ok) throw new Error('me failed')
+          renderMeMD(await meR.json())
+        }
+        if (done || loading) return
+        loading = true
+        const params = new URLSearchParams({ limit: '20' })
+        if (paging.md.max_id) params.set('max_id', paging.md.max_id)
+        const homeR = await fetch(`/api/home?${params}`)
+        if (!homeR.ok) throw new Error('home failed')
+        const items = await homeR.json()
+        renderStatusesMD(items, { append: true })
+        // 다음 요청용 max_id 갱신: 마지막 아이템의 id
+        if (items.length) {
+          paging.md.max_id = items[items.length - 1].id
+        } else {
+          done = true
+        }
+      } catch(e){
+        feed.insertAdjacentHTML('beforeend', `<div class="bg-white border rounded-2xl p-4">오류: ${esc(String(e))}</div>`)
+        done = true
+      } finally {
+        loading = false
+      }
+    }
+
+    async function loadFavMD(){
+      try {
+        feed.innerHTML = ''
+        done = true
+        const fav = await (await fetch('/api/favourites')).json()
+        renderStatusesMD(fav, { append:false })
+      } catch(e){
+        feed.innerHTML = `<div class="bg-white border rounded-2xl p-4">오류: ${esc(String(e))}</div>`
+      }
+    }
+
+    async function loadMK({ reset=false } = {}){
+      try {
+        if (reset) {
+          feed.innerHTML = ''
+          done = false
+          paging.mk = { untilId: null, sinceId: null }
+          const meR = await fetch('/api/mk/me'); if (!meR.ok) throw new Error('me failed')
+          renderMeMK(await meR.json())
+        }
+        if (done || loading) return
+        loading = true
+        const params = new URLSearchParams({ limit: '20' })
+        if (paging.mk.untilId) params.set('untilId', paging.mk.untilId)
+        const homeR = await fetch(`/api/mk/home?${params}`)
+        if (!homeR.ok) throw new Error('home failed')
+        const items = await homeR.json()
+        renderStatusesMK(items, { append: true })
+        if (items.length) {
+          // Misskey는 오래된 방향 페이지네이션에 untilId 사용 → 마지막 항목 id 저장
+          paging.mk.untilId = items[items.length - 1].id
+        } else {
+          done = true
+        }
+      } catch(e){
+        feed.insertAdjacentHTML('beforeend', `<div class="bg-white border rounded-2xl p-4">오류: ${esc(String(e))}</div>`)
+        done = true
+      } finally {
+        loading = false
+      }
+    }
+
+    // --- 무한 스크롤 ---
+    const io = new IntersectionObserver(async (entries)=>{
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          if (kind === 'md') await loadMD()
+          else await loadMK()
+        }
+      }
+    })
+
+    ;(async ()=>{
+      kind = await detectKind()
+      document.getElementById('btnHome').onclick = async ()=>{
+        if (kind==='md') await loadMD({ reset:true })
+        else await loadMK({ reset:true })
+      }
+      document.getElementById('btnFav').onclick  = async ()=>{
+        if (kind==='md') { await loadFavMD() } else { await loadMK({ reset:true }) }
+      }
+      document.getElementById('btnLogout').onclick = async ()=>{
+        if (kind==='md') await fetch('/api/auth/logout',{method:'POST'})
+        else await fetch('/api/mk/logout',{method:'POST'})
+        location.href='/'
+      }
+
+      // 첫 로드 + 옵저버 시작
+      if (kind==='md') await loadMD({ reset:true })
+      else await loadMK({ reset:true })
+      io.observe(sentinel)
+    })()
+  </script>
+</body>
+</html>

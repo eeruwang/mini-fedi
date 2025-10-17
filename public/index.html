@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fedi Viewer · Sign in</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-dvh bg-neutral-50">
+  <header class="sticky top-0 z-10 bg-white/70 backdrop-blur-md border-b shadow-sm">
+    <div class="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+      <h1 class="font-semibold">Fedi Viewer</h1>
+      <span class="text-sm text-neutral-600">Mastodon + Misskey</span>
+    </div>
+  </header>
+
+  <main class="max-w-lg mx-auto px-4 py-10">
+    <div class="bg-white border rounded-2xl shadow-sm p-6">
+      <div class="flex gap-1 p-1 bg-neutral-100 rounded-xl">
+        <button id="tab-md" class="flex-1 py-2 rounded-lg bg-white shadow text-sm font-medium">Mastodon</button>
+        <button id="tab-mk" class="flex-1 py-2 rounded-lg text-sm font-medium text-neutral-600">Misskey</button>
+      </div>
+
+      <!-- Mastodon -->
+      <form id="form-md" class="mt-6 space-y-3">
+        <label class="block text-sm text-neutral-600">인스턴스 도메인</label>
+        <input id="md-iss" class="w-full border rounded-xl px-3 py-2" placeholder="mastodon.social" required />
+        <button class="w-full mt-2 rounded-xl bg-black text-white py-2.5">Continue with Mastodon</button>
+        <p class="text-xs text-neutral-500">OAuth(PKCE)로 로그인합니다.</p>
+      </form>
+
+      <!-- Misskey -->
+      <form id="form-mk" class="mt-6 space-y-3 hidden">
+        <label class="block text-sm text-neutral-600">인스턴스 도메인</label>
+        <input id="mk-host" class="w-full border rounded-xl px-3 py-2" placeholder="misskey.io" required />
+        <button class="w-full mt-2 rounded-xl bg-black text-white py-2.5">Continue with Misskey</button>
+        <p class="text-xs text-neutral-500">정식 OAuth(앱 승인) 흐름으로 로그인합니다.</p>
+      </form>
+    </div>
+  </main>
+
+  <script>
+    const mdBtn = document.getElementById('tab-md')
+    const mkBtn = document.getElementById('tab-mk')
+    const fmd = document.getElementById('form-md')
+    const fmk = document.getElementById('form-mk')
+
+    function setTab(which){
+      const on = which==='md'
+      mdBtn.classList.toggle('bg-white', on)
+      mdBtn.classList.toggle('shadow', on)
+      mdBtn.classList.toggle('text-black', on)
+      mdBtn.classList.toggle('text-neutral-600', !on)
+      mkBtn.classList.toggle('bg-white', !on)
+      mkBtn.classList.toggle('shadow', !on)
+      mkBtn.classList.toggle('text-black', !on)
+      mkBtn.classList.toggle('text-neutral-600', on)
+      fmd.classList.toggle('hidden', !on)
+      fmk.classList.toggle('hidden', on)
+    }
+    mdBtn.onclick = ()=>setTab('md')
+    mkBtn.onclick = ()=>setTab('mk')
+
+    fmd.addEventListener('submit', (e) => {
+      e.preventDefault()
+      const iss = document.getElementById('md-iss').value.trim().toLowerCase()
+      if (!iss) return
+      location.href = `/api/auth/start?iss=${encodeURIComponent(iss)}`
+    })
+    fmk.addEventListener('submit', (e) => {
+      e.preventDefault()
+      const host = document.getElementById('mk-host').value.trim().toLowerCase()
+      if (!host) return
+      location.href = `/api/mk/start?host=${encodeURIComponent(host)}`
+    })
+  </script>
+</body>
+</html>

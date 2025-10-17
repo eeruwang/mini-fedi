@@ -1,0 +1,7 @@
+name = "mini-fediview"
+compatibility_date = "2024-11-01"
+pages_build_output_dir = "./public"
+
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "REPLACE_WITH_YOUR_NAMESPACE_ID"   # 대시보드의 KV 네임스페이스 ID로 교체

@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": [
+      "@cloudflare/workers-types",
+      "@cloudflare/workers-types/2024-11-01"
+    ],
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["functions/**/*.ts", "global.d.ts"]
+}
