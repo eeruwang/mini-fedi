@@ -1,10 +1,10 @@
 // functions/api/mk/callback.ts
-export const onRequestGet: PagesFunction<{ OAUTH_KV: KVNamespace }> = async ({ request, env }) => {
+export const onRequestGet: PagesFunction<{ FEDIOAUTH_KV: KVNamespace }> = async ({ request, env }) => {
   const u = new URL(request.url)
   const session = u.searchParams.get('session')
   if (!session) return new Response('Bad Request', { status: 400 })
 
-  const map = await env.OAUTH_KV.get(`mksess:${session}`, { type:'json' }) as any | null
+  const map = await env.FEDIOAUTH_KV.get(`mksess:${session}`, { type:'json' }) as any | null
   if (!map) return new Response('Session not found/expired', { status: 400 })
   const { host, appSecret } = map
 
@@ -17,7 +17,7 @@ export const onRequestGet: PagesFunction<{ OAUTH_KV: KVNamespace }> = async ({ r
   const data = await res.json() // { accessToken, user }
 
   // 세션 매핑 정리
-  await env.OAUTH_KV.delete(`mksess:${session}`)
+  await env.FEDIOAUTH_KV.delete(`mksess:${session}`)
 
   const base = 'Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400'
   const h = new Headers({ location: '/app.html' })

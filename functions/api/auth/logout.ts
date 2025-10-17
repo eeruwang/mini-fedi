@@ -1,18 +1,18 @@
 // functions/api/auth/callback.ts
 import type { PagesFunction, KVNamespace } from "@cloudflare/workers-types";
 
-export const onRequestGet: PagesFunction<{ OAUTH_KV: KVNamespace }> = async ({ request, env }) => {
+export const onRequestGet: PagesFunction<{ FEDIOAUTH_KV: KVNamespace }> = async ({ request, env }) => {
   const u = new URL(request.url)
   const code = u.searchParams.get('code')
   const state = u.searchParams.get('state')
   if (!code || !state) return new Response('Bad Request', { status: 400 })
 
-  const entry = await env.OAUTH_KV.get(`state:${state}`, { type: 'json' }) as any | null
+  const entry = await env.FEDIOAUTH_KV.get(`state:${state}`, { type: 'json' }) as any | null
   if (!entry) return new Response('State expired', { status: 400 })
   const { iss, verifier } = entry
-  await env.OAUTH_KV.delete(`state:${state}`)
+  await env.FEDIOAUTH_KV.delete(`state:${state}`)
 
-  const app = await env.OAUTH_KV.get(`app:${iss}`, { type: 'json' }) as any | null
+  const app = await env.FEDIOAUTH_KV.get(`app:${iss}`, { type: 'json' }) as any | null
   if (!app) return new Response('App not found', { status: 400 })
 
   const tok = await fetch(`https://${iss}/oauth/token`, {

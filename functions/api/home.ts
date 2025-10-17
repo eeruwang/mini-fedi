@@ -53,7 +53,7 @@ function absorbExtensions(s: any) {
   return s
 }
 
-export const onRequestGet: PagesFunction<{ OAUTH_KV: KVNamespace }> = async ({ request, env }) => {
+export const onRequestGet: PagesFunction<{ FEDIOAUTH_KV: KVNamespace }> = async ({ request, env }) => {
   const cookie = request.headers.get('cookie') || ''
   const token = /ap_token=([^;]+)/.exec(cookie)?.[1]
   const iss   = /ap_inst=([^;]+)/.exec(cookie)?.[1]
@@ -93,8 +93,8 @@ export const onRequestGet: PagesFunction<{ OAUTH_KV: KVNamespace }> = async ({ r
     }
     if (!originHost) return s
 
-    if (await isMisskey(originHost, env.OAUTH_KV)) {
-      const rx = await fetchMisskeyReactionsByUri(originHost, originUri, env.OAUTH_KV)
+    if (await isMisskey(originHost, env.FEDIOAUTH_KV)) {
+      const rx = await fetchMisskeyReactionsByUri(originHost, originUri, env.FEDIOAUTH_KV)
       if (rx) {
         const merged: Record<string, number> = { ...(s.mkReactions || {}) }
         for (const [k, v] of Object.entries(rx)) merged[k] = (merged[k]||0) + (v as number)

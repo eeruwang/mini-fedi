@@ -1,0 +1,10 @@
+# 시스템/도구 캐시
+.DS_Store
+node_modules/
+.wrangler/
+dist/
+build/
+
+# 환경 변수
+.env
+.env.*
