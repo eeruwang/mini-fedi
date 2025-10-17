@@ -248,6 +248,7 @@ async function renderPostHTML(post, opts) {
         <div class="content">${contentHTML}</div>
         ${mediaHTML}
         <div class="reactions">${reactionsHTML}</div>
+        ${debugHTML}
       </article>
     `;
   }
@@ -369,6 +370,12 @@ async function loadPage(initial=false) {
       source === 'masto' ? u.searchParams.set('max_id', cursor)
                          : u.searchParams.set('untilId', cursor);
     }
+    // ↓↓↓ 페이지 URL에 ?debug=1 있으면 같이 붙여서 서버가 디버그를 내도록
+    if (new URL(location.href).searchParams.get('debug') === '1') {
+      u.searchParams.set('debug', '1');
+    }
+
+
     const data = await jfetch(u.toString());
 
     const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];

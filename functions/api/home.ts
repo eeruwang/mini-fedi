@@ -135,14 +135,15 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
 
   const url = new URL(request.url);
   const max_id = url.searchParams.get("max_id") || "";
+  const debug  = url.searchParams.get("debug") === "1";
 
   // 1) Mastodon 홈
   const mastoURL = new URL(`https://${apInst}/api/v1/timelines/home`);
   if (max_id) mastoURL.searchParams.set("max_id", max_id);
 
-  const res = await fetchWithTimeout(mastoURL.toString(), {
+  const res = await fetch(mastoURL.toString(), {
     headers: { authorization: `Bearer ${apToken}` }
-  }, 5000);
+  });
   if (!res.ok) {
     return new Response(JSON.stringify({ error: `mastodon ${res.status}` }), {
       status: 502, headers: { "content-type": "application/json" }
@@ -155,29 +156,23 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     parseLinkForNextMaxId(linkHeader) ||
     (statuses.length ? statuses[statuses.length - 1].id : null);
 
-  // 2) 리액션 병합 준비: 대상만 추려서 병렬 처리
-  type Job = { st: any; host: string; apUri: string };
-  const jobs: Job[] = [];
+  let mergedCount = 0, triedCount = 0, errorCount = 0;
 
+  // 2) Misskey 리액션 병합 (디버그 기록 포함)
   for (const st of statuses) {
-    const apUri: string | undefined = st?.reblog?.uri || st?.uri;
-    if (!apUri || !/^https?:\/\//i.test(apUri)) continue;
-    const host = new URL(apUri).host;
-    if (looksClearlyMastodonHost(host)) continue; // 마스토돈/플레로마/아코마는 스킵(속도↑)
-    jobs.push({ st, host, apUri });
-  }
-
-  // 호스트별 meta는 미리 병렬로 받아두기 (dedupe)
-  const uniqueHosts = Array.from(new Set(jobs.map(j => j.host)));
-  await Promise.all(uniqueHosts.map(h => getMisskeyMeta(env, h).catch(() => null)));
-
-  // ap/show 병렬 처리 (동시 6개 제한)
-  const run = limiter(6);
-  await Promise.all(jobs.map(job => run(async () => {
     try {
-      const ap = await getApShow(env, job.host, job.apUri);
+      const apUri: string | undefined = st?.reblog?.uri || st?.uri;
+      if (!apUri || !/^https?:\/\//i.test(apUri)) {
+        if (debug) st._mkDebug = { stage: "skip_no_ap_uri", uri: st?.uri, reblogUri: st?.reblog?.uri };
+        continue;
+      }
+      const originHost = new URL(apUri).host;
+      triedCount++;
+
+      // ap/show 조회
+      const ap = await getApShow(env, originHost, apUri);
       const obj = ap?.object || ap;
-      if (!obj) return;
+      if (!obj) { if (debug) st._mkDebug = { stage: "no_ap_object", apUri, host: originHost }; continue; }
 
       const reactions =
         obj?.reactions ||
@@ -185,11 +180,15 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
         ap?.reactions ||
         ap?.reactionCounts ||
         null;
-      if (!reactions || typeof reactions !== "object") return;
 
-      const meta = metaMem.get(job.host) || null;
+      if (!reactions || typeof reactions !== "object") {
+        if (debug) st._mkDebug = { stage: "no_reactions", apUri, host: originHost };
+        continue;
+      }
+
+      const meta = await getMisskeyMeta(env, originHost).catch(() => null);
+
       const out: Array<{ name: string; url: string|null; count: number }> = [];
-
       for (const k of Object.keys(reactions)) {
         const count = reactions[k] ?? 0;
         if (!count) continue;
@@ -198,17 +197,38 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
           out.push({ name, url: null, count });
         } else {
           const url1 = meta ? resolveEmojiUrlFromMeta(meta, name) : null;
-          const url2 = resolveEmojiUrlFromApTag(ap, name);
+          const url2 = resolveEmojiUrlFromApTag(obj, name);
           out.push({ name, url: url1 || url2 || null, count });
         }
       }
-      if (out.length) job.st._mkReactions = out;
-    } catch {
-      // 개별 실패 무시
-    }
-  })));
 
-  return new Response(JSON.stringify({ items: statuses, next_max_id }), {
-    headers: { "content-type": "application/json" }
+      if (out.length) {
+        st._mkReactions = out;
+        mergedCount++;
+        if (debug) st._mkDebug = {
+          stage: "ok",
+          apUri, host: originHost,
+          keys: Object.keys(reactions),
+          merged: out.length
+        };
+      } else {
+        if (debug) st._mkDebug = {
+          stage: "empty_after_parse",
+          apUri, host: originHost,
+          keys: Object.keys(reactions)
+        };
+      }
+    } catch (e: any) {
+      errorCount++;
+      if (debug) st._mkDebug = { stage: "error", message: String(e) };
+    }
+  }
+
+  const body = JSON.stringify({ items: statuses, next_max_id });
+  return new Response(body, {
+    headers: {
+      "content-type": "application/json",
+      "x-mk-merge-summary": `tried=${triedCount}; merged=${mergedCount}; errors=${errorCount}`
+    }
   });
 };
