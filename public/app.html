@@ -372,12 +372,15 @@ async function loadPage(initial=false) {
     const data = await jfetch(u.toString());
 
     const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
-    for (const post of items) {
-      const html = await renderPostHTML(post, { source });
+    const htmlList = await Promise.all(items.map(post => renderPostHTML(post, { source })));
+    const frag = document.createDocumentFragment();
+    for (const html of htmlList) {
       const div = document.createElement('div');
       div.innerHTML = html;
-      feedEl.appendChild(div.firstElementChild);
+      frag.appendChild(div.firstElementChild);
     }
+    feedEl.appendChild(frag);
+
     cursor = (source === 'masto')
       ? (data?.next_max_id || (items.length ? items[items.length-1]?.id : null))
       : (data?.next || (items.length ? items[items.length-1]?.id : null));
@@ -423,7 +426,6 @@ document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
 // infinite scroll
 // infinite scroll (disconnect 지원)
-let io;
 io = new IntersectionObserver(async (entries) => {
   for (const e of entries) {
     if (e.isIntersecting) await loadPage();
