@@ -15,7 +15,6 @@
       --btn-bg-hover: rgba(0,0,0,0.08);
       --link: #1b6fff;
     }
-
     :root[data-theme="dark"] {
       --bg: #0b0e12;
       --fg: #e6eef8;
@@ -26,8 +25,6 @@
       --btn-bg-hover: rgba(255,255,255,0.12);
       --link: #98c1ff;
     }
-
-    /* 시스템 다크 선호를 기본값으로 쓰고 싶으면(사용자가 선택 안 했을 때) */
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme]) {
         --bg: #0b0e12;
@@ -40,21 +37,22 @@
         --link: #98c1ff;
       }
     }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #0b0e12; color: #e6eef8; }
-    header { position: sticky; top: 0; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); background: color-mix(in oklab, var(--bg) 70%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
+    header { position: sticky; top: 0; background: color-mix(in oklab, var(--bg) 70%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); z-index: 10; }
     .wrap { max-width: 840px; margin: 0 auto; padding: 12px 16px; }
     .row { display: flex; gap: 8px; align-items: center; }
-    .btn { padding: 8px 12px; border-radius: 10px; background: var(--btn-bg); border: 1px solid var(--border); color: var(--fg); }
+    .btn { padding: 8px 12px; border-radius: 10px; background: var(--btn-bg); border: 1px solid var(--border); color: var(--fg); cursor: pointer; }
     .btn:hover { background: var(--btn-bg-hover); }
-    .pill { padding: 6px 10px; border: 1px solid rgba(255,255,255,0.12); border-radius: 999px; background: rgba(255,255,255,0.04); }
-    .post { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .pill { padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); }
+    .post { padding: 14px 16px; border-bottom: 1px solid var(--border); }
     .name { font-weight: 700; }
-    .name img { width: 1em; height: 1em; vertical-align: -0.15em; }
+    .name img { height: 1em; width: auto; vertical-align: -0.15em; }
     .meta { opacity: .7; font-size: 12px; }
     .media img, .media video { max-width: 100%; border-radius: 10px; display: block; margin-top: 8px; }
-    .reactions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-    .badge { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.06); border-radius: 999px; padding: 4px 8px; font-size: 12px; }
-    .badge img { width: 1.1em; height: 1.1em; vertical-align: -0.2em; border-radius: 3px; }
+    .reactions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 6px; border-top: 1px solid var(--border); }
+    .badge { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 4px 8px; font-size: 12px; }
+    .badge img { height: 1.1em; width: auto; vertical-align: -0.2em; border-radius: 3px; }
     a { color: var(--link); text-decoration: none; }
     a:hover { text-decoration: underline; }
     .post-head { display:flex; gap:10px; align-items:center; margin-bottom:4px; }
@@ -97,42 +95,31 @@ async function jfetch(url, opts = {}) {
 /* =========================
    Theme toggle
    ========================= */
-const THEME_KEY = 'theme'; // 'light' | 'dark' 저장
-
+const THEME_KEY = 'theme';
 function getPreferredTheme() {
   const saved = localStorage.getItem(THEME_KEY);
   if (saved === 'light' || saved === 'dark') return saved;
-  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-    ? 'dark' : 'light';
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
-
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   const btn = document.getElementById('theme-toggle');
   if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
 }
-
 function toggleTheme() {
   const current = document.documentElement.getAttribute('data-theme') || getPreferredTheme();
   const next = current === 'dark' ? 'light' : 'dark';
   localStorage.setItem(THEME_KEY, next);
   applyTheme(next);
 }
-
-// 최초 적용
 applyTheme(getPreferredTheme());
-
-// 시스템 설정이 바뀌면(사용자가 저장한 테마가 없을 때만) 따라가고 싶다면:
 try {
   const mql = window.matchMedia('(prefers-color-scheme: dark)');
   mql.addEventListener?.('change', e => {
     const saved = localStorage.getItem(THEME_KEY);
-    if (saved !== 'light' && saved !== 'dark') {
-      applyTheme(e.matches ? 'dark' : 'light');
-    }
+    if (saved !== 'light' && saved !== 'dark') applyTheme(e.matches ? 'dark' : 'light');
   });
 } catch {}
-
 
 /* =========================
    Emoji map (Misskey & Masto)
@@ -146,24 +133,19 @@ async function getMisskeyEmojis(host) {
     const list = Array.isArray(data?.emojis) ? data.emojis : [];
     emojiMapCache.set(host, list);
     return list;
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 function buildMastoEmojiMap(status) {
-  // Mastodon: status.emojis (custom in content), account.emojis (for display names), maybe poll.emojis
   const all = [];
   if (Array.isArray(status?.emojis)) all.push(...status.emojis);
   if (Array.isArray(status?.account?.emojis)) all.push(...status.account.emojis);
   if (Array.isArray(status?.poll?.emojis)) all.push(...status.poll.emojis);
-  // Normalize to {name,url}
   const out = [];
   for (const e of all) {
     if (e && typeof e.shortcode === 'string' && typeof e.url === 'string') {
       out.push({ name: e.shortcode, url: e.url });
     }
   }
-  // dedupe by name
   const seen = new Set();
   return out.filter(e => (seen.has(e.name) ? false : (seen.add(e.name), true)));
 }
@@ -174,7 +156,6 @@ function buildMastoEmojiMap(status) {
 function renderEmojisToHTML(textOrHTML, emojiList) {
   if (!textOrHTML || !emojiList?.length) return textOrHTML || '';
   let html = String(textOrHTML);
-  // Replace :name: with <img>
   for (const e of emojiList) {
     if (!e?.name || !e?.url) continue;
     const re = new RegExp(`:${e.name}:`, 'g');
@@ -184,6 +165,9 @@ function renderEmojisToHTML(textOrHTML, emojiList) {
     );
   }
   return html;
+}
+function escapeHTML(s='') {
+  return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
 }
 
 /* =========================
@@ -196,7 +180,6 @@ function renderMedia(post) {
   if (!media.length) return '';
   const pieces = [];
   for (const m of media) {
-    // Mastodon: type=image|video|gifv, url/preview_url
     if (m?.type && (m.url || m.preview_url)) {
       if (m.type === 'image' || m.type === 'gifv') {
         pieces.push(`<img src="${m.preview_url || m.url}" loading="lazy" alt="" />`);
@@ -205,17 +188,12 @@ function renderMedia(post) {
       }
       continue;
     }
-    // Misskey: type = "image/png" etc, url / thumbnailUrl
     if (m?.type && (m.url || m.thumbnailUrl)) {
       const isImage = String(m.type).startsWith('image/');
-      if (isImage) {
-        pieces.push(`<img src="${m.thumbnailUrl || m.url}" loading="lazy" alt="" />`);
-      } else {
-        pieces.push(`<video src="${m.url}" controls playsinline></video>`);
-      }
+      if (isImage) pieces.push(`<img src="${m.thumbnailUrl || m.url}" loading="lazy" alt="" />`);
+      else pieces.push(`<video src="${m.url}" controls playsinline></video>`);
       continue;
     }
-    // Fallback: try url
     if (m?.url) pieces.push(`<img src="${m.url}" loading="lazy" alt="" />`);
   }
   return pieces.length ? `<div class="media">${pieces.join('')}</div>` : '';
@@ -226,11 +204,6 @@ function renderMedia(post) {
    ========================= */
 async function renderPostHTML(post, opts) {
   const { source } = opts; // 'masto' | 'misskey'
-  let displayName = '';
-  let handle = '';
-  let createdAt = '';
-  let contentHTML = '';
-  let reactionsHTML = '';
 
   if (source === 'masto') {
     const acc = post?.account || {};
@@ -238,11 +211,8 @@ async function renderPostHTML(post, opts) {
     const handle = acc.acct ? `@${acc.acct}` : '';
     const createdAt = post?.created_at || '';
     const avatarURL = acc.avatar_static || acc.avatar || '';
-
-    // 커스텀 이모지 치환
     const mastoEmojiMap = buildMastoEmojiMap(post);
     const contentHTML = renderEmojisToHTML(post?.content || '', mastoEmojiMap);
-
     const mediaHTML = renderMedia(post);
     const faves = post?.favourites_count ?? 0;
     const boosts = post?.reblogs_count ?? 0;
@@ -251,9 +221,8 @@ async function renderPostHTML(post, opts) {
     let reactionsHTML = '';
     if (Array.isArray(post?._mkReactions)) {
       const mkBadges = post._mkReactions.map(r => {
-        const img = r.url ? `<img src="${r.url}" alt=":${r.name}:" />` : '';
-        const cnt = typeof r.count === 'number' ? r.count : '';
-        return `<span class="badge">${img}${cnt}</span>`;
+        if (r.url) return `<span class="badge"><img src="${r.url}" alt=":${r.name}:" />${r.count ?? ''}</span>`;
+        return `<span class="badge">${r.name} ${r.count ?? ''}</span>`;
       }).join('');
       reactionsHTML += mkBadges;
     }
@@ -275,22 +244,16 @@ async function renderPostHTML(post, opts) {
     `;
   }
 
-
-  // Misskey
   if (source === 'misskey') {
     const u = post?.user || {};
     const displayName = u.name || u.username || '';
     const handle = u.username ? `@${u.username}` : '';
     const createdAt = post?.createdAt || '';
     const avatarURL = u.avatarUrl || '';
-
     const host = getCookie('mk_host');
     const emojiList = await getMisskeyEmojis(host);
     const text = post?.text || '';
-    const textHTML = renderEmojisToHTML(
-      escapeHTML(text).replace(/\n/g, '<br>'),
-      emojiList
-    );
+    const textHTML = renderEmojisToHTML(escapeHTML(text).replace(/\n/g, '<br>'), emojiList);
     const mediaHTML = renderMedia(post);
 
     const rx = post?.reactions || {};
@@ -321,13 +284,7 @@ async function renderPostHTML(post, opts) {
     `;
   }
 
-
-  // Fallback
   return `<article class="post"><div class="content">Unsupported post</div></article>`;
-}
-
-function escapeHTML(s='') {
-  return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
 }
 
 /* =========================
@@ -337,11 +294,10 @@ const feedEl = document.getElementById('feed');
 let mode = 'home'; // 'home' | 'fav'
 let isLoading = false;
 let cursor = null; // Masto: max_id, Misskey: untilId
-let source = null; // 'masto' | 'misskey' — 현재 데이터 소스(탭별로 바뀔 수 있음)
+let source = null; // 'masto' | 'misskey'
 let activeHost = null;
 
 async function loadMe() {
-  // 우선 Mastodon me 시도 → 실패하면 Misskey me 시도
   try {
     const me = await jfetch('/api/me');
     source = 'masto';
@@ -360,7 +316,6 @@ async function loadMe() {
 async function loadPage(initial=false) {
   if (isLoading) return;
   isLoading = true;
-
   try {
     const path = mode === 'fav'
       ? (source === 'masto' ? '/api/favourites' : '/api/mk/home?favourites=1')
@@ -368,12 +323,10 @@ async function loadPage(initial=false) {
 
     const u = new URL(path, location.origin);
     if (cursor) {
-      // cursor param names differ
       if (source === 'masto') u.searchParams.set('max_id', cursor);
       else u.searchParams.set('untilId', cursor);
     }
     const data = await jfetch(u.toString());
-
     const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
     for (const post of items) {
       const html = await renderPostHTML(post, { source });
@@ -381,8 +334,6 @@ async function loadPage(initial=false) {
       div.innerHTML = html;
       feedEl.appendChild(div.firstElementChild);
     }
-
-    // Update cursor
     if (source === 'masto') {
       cursor = data?.next_max_id || (items.length ? items[items.length - 1]?.id : null);
     } else {
@@ -399,16 +350,10 @@ async function loadPage(initial=false) {
    UI bindings
    ========================= */
 document.getElementById('tab-home').addEventListener('click', async () => {
-  mode = 'home';
-  cursor = null;
-  feedEl.innerHTML = '';
-  await loadPage(true);
+  mode = 'home'; cursor = null; feedEl.innerHTML = ''; await loadPage(true);
 });
 document.getElementById('tab-fav').addEventListener('click', async () => {
-  mode = 'fav';
-  cursor = null;
-  feedEl.innerHTML = '';
-  await loadPage(true);
+  mode = 'fav'; cursor = null; feedEl.innerHTML = ''; await loadPage(true);
 });
 document.getElementById('logout').addEventListener('click', async () => {
   try {
@@ -418,16 +363,11 @@ document.getElementById('logout').addEventListener('click', async () => {
     location.href = '/';
   }
 });
-
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
 // infinite scroll
 new IntersectionObserver(async (entries) => {
-  for (const e of entries) {
-    if (e.isIntersecting) {
-      await loadPage();
-    }
-  }
+  for (const e of entries) if (e.isIntersecting) await loadPage();
 }, { rootMargin: '600px' }).observe(document.getElementById('sentinel'));
 
 // init

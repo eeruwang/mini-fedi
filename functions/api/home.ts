@@ -1,108 +1,141 @@
-// functions/api/home.ts
-// - 확장 필드(emoji_reactions, pleroma.emoji_reactions) 흡수
-// - 원본이 Misskey면 /api/ap/show { uri } 역조회하여 reactions 병합
-// - KV 캐시: mkmeta:<host> (1d), mk:note:<host>:<sha256(uri)> (120s)
-// - 페이지네이션: ?limit, ?max_id, ?since_id 파라미터 그대로 Mastodon에 전달
-import type { PagesFunction, KVNamespace } from "@cloudflare/workers-types";
+/// <reference types="@cloudflare/workers-types" />
+import type { PagesFunction } from "@cloudflare/workers-types";
 
-function toHex(bytes: Uint8Array) { return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join('') }
+type Env = { FEDIOAUTH_KV: KVNamespace };
+
+// ===== utils =====
+function parseCookies(req: Request) {
+  const h = req.headers.get("Cookie") || "";
+  const out: Record<string,string> = {};
+  h.split(/;\s*/).forEach(p => {
+    const i = p.indexOf("="); if (i > -1) out[p.slice(0,i)] = decodeURIComponent(p.slice(i+1));
+  });
+  return out;
+}
 async function sha256Hex(s: string) {
-  const data = new TextEncoder().encode(s)
-  const hash = await crypto.subtle.digest('SHA-256', data)
-  return toHex(new Uint8Array(hash))
+  const data = new TextEncoder().encode(s);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,"0")).join("");
 }
-async function isMisskey(host: string, kv: KVNamespace) {
-  const key = `mkmeta:${host}`
-  const hit = await kv.get(key)
-  if (hit) return hit === '1'
-  try {
-    const r = await fetch(`https://${host}/api/meta`, { method:'POST', headers:{'content-type':'application/json'}, body:'{}' })
-    const j = await r.json().catch(()=>null)
-    const ok = !!j && (j.softwareName?.toLowerCase?.() === 'misskey' || String(j.version||'').toLowerCase().includes('misskey'))
-    await kv.put(key, ok ? '1' : '0', { expirationTtl: 86400 })
-    return ok
-  } catch {
-    await kv.put(key, '0', { expirationTtl: 86400 })
-    return false
-  }
+function parseLinkForNextMaxId(link: string | null): string | null {
+  if (!link) return null;
+  // e.g. <https://mastodon.example/api/v1/timelines/home?max_id=12345>; rel="next", ...
+  const m = link.match(/<[^>]*[?&]max_id=([^&>]+)[^>]*>;\s*rel="next"/);
+  return m ? decodeURIComponent(m[1]) : null;
 }
-async function fetchMisskeyReactionsByUri(host: string, uri: string, kv: KVNamespace) {
-  const cacheKey = `mk:note:${host}:${await sha256Hex(uri)}`
-  const c = await kv.get(cacheKey, { type:'json' }) as any | null
-  if (c?.reactions) return c.reactions
+
+// ===== Misskey helpers (KV cached) =====
+async function getMisskeyMeta(env: Env, host: string) {
+  const key = `mkmeta:${host}`;
+  const cached = await env.FEDIOAUTH_KV.get(key);
+  if (cached) { try { return JSON.parse(cached); } catch {} }
+  const res = await fetch(`https://${host}/api/meta`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) return null;
+  const meta = await res.json();
+  await env.FEDIOAUTH_KV.put(key, JSON.stringify(meta), { expirationTtl: 86400 });
+  return meta;
+}
+function looksLikeMisskey(meta: any) {
+  const n = String(meta?.softwareName || meta?.name || "").toLowerCase();
+  return n.includes("misskey") || n.includes("foundkey") || n.includes("calckey");
+}
+async function getApShow(env: Env, host: string, uri: string) {
+  const digest = await sha256Hex(uri);
+  const key = `mk:note:${host}:${digest}`;
+  const cached = await env.FEDIOAUTH_KV.get(key);
+  if (cached) { try { return JSON.parse(cached); } catch {} }
   const res = await fetch(`https://${host}/api/ap/show`, {
-    method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ uri })
-  })
-  if (!res.ok) return null
-  const apObj = await res.json().catch(()=>null)
-  const note = apObj?.object || apObj
-  const reactions = note?.reactions || null
-  await kv.put(cacheKey, JSON.stringify({ reactions }), { expirationTtl: 120 })
-  return reactions
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ uri }),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  await env.FEDIOAUTH_KV.put(key, JSON.stringify(data), { expirationTtl: 120 });
+  return data;
 }
-function absorbExtensions(s: any) {
-  const pl = s.pleroma || s.firefish || s._pleroma
-  if (pl?.emoji_reactions?.length) {
-    s.mkReactions = Object.fromEntries(pl.emoji_reactions.map((r: any)=>[r.name, r.count]))
-  }
-  if (Array.isArray(s.emoji_reactions)) {
-    const m: Record<string, number> = s.mkReactions || {}
-    for (const r of s.emoji_reactions) m[r.name] = (m[r.name]||0) + (r.count||0)
-    s.mkReactions = m
-  }
-  return s
+function parseMkReactionKey(key: string) {
+  if (!key.includes(":")) return { kind: "unicode" as const, name: key, host: null };
+  const trimmed = key.replace(/^:/, "").replace(/:$/, "");
+  const [name, host] = trimmed.split("@");
+  return { kind: "custom" as const, name, host: host || null };
+}
+function resolveEmojiUrlFromMeta(meta: any, name: string) {
+  const list = Array.isArray(meta?.emojis) ? meta.emojis : [];
+  const found = list.find((e: any) => e?.name === name);
+  return found?.url || null;
 }
 
-export const onRequestGet: PagesFunction<{ FEDIOAUTH_KV: KVNamespace }> = async ({ request, env }) => {
-  const cookie = request.headers.get('cookie') || ''
-  const token = /ap_token=([^;]+)/.exec(cookie)?.[1]
-  const iss   = /ap_inst=([^;]+)/.exec(cookie)?.[1]
-  if (!token || !iss) return new Response('Unauthorized', { status: 401 })
+// ===== main handler =====
+export const onRequestGet: PagesFunction<Env> = async (ctx) => {
+  const { request, env } = ctx;
+  const cookies = parseCookies(request);
+  const apToken = cookies["ap_token"];
+  const apInst  = cookies["ap_inst"]; // e.g. mastodon.social
 
-  const url = new URL(request.url)
-  const limit = url.searchParams.get('limit') || '20'
-  const since_id = url.searchParams.get('since_id')
-  const max_id = url.searchParams.get('max_id')
+  if (!apToken || !apInst) {
+    return new Response(JSON.stringify({ error: "not logged in" }), {
+      status: 401, headers: { "content-type": "application/json" }
+    });
+  }
 
-  const apiUrl = new URL(`https://${iss}/api/v1/timelines/home`)
-  apiUrl.searchParams.set('limit', limit)
-  if (since_id) apiUrl.searchParams.set('since_id', since_id)
-  if (max_id) apiUrl.searchParams.set('max_id', max_id)
+  const url = new URL(request.url);
+  const max_id = url.searchParams.get("max_id") || "";
 
-  const r = await fetch(apiUrl.toString(), {
-    headers: { authorization: `Bearer ${token}`, accept: 'application/json' }
-  })
-  if (!r.ok) return new Response('Upstream error', { status: 502 })
-  const list = await r.json() as any[]
+  // 1) fetch Mastodon home
+  const mastoURL = new URL(`https://${apInst}/api/v1/timelines/home`);
+  if (max_id) mastoURL.searchParams.set("max_id", max_id);
 
-  const enriched = await Promise.all(list.map(async (s) => {
-    absorbExtensions(s)
+  const res = await fetch(mastoURL.toString(), {
+    headers: { "authorization": `Bearer ${apToken}` }
+  });
+  if (!res.ok) {
+    return new Response(JSON.stringify({ error: `mastodon ${res.status}` }), {
+      status: 502, headers: { "content-type": "application/json" }
+    });
+  }
+  const statuses: any[] = await res.json();
+  const linkHeader = res.headers.get("Link");
+  const next_max_id = parseLinkForNextMaxId(linkHeader) || (statuses.length ? statuses[statuses.length-1].id : null);
 
-    const originUri = s.uri || s.url
-    if (!originUri) return s
-
-    let originHost = ''
+  // 2) merge Misskey reactions into each status as _mkReactions
+  for (const st of statuses) {
     try {
-      // 절대 URL 우선
-      originHost = new URL(originUri).host
-    } catch {
-      try {
-        // 상대 URL이면 현재 인스턴스를 베이스로 보정
-        originHost = new URL(originUri, `https://${iss}`).host
-      } catch {}
-    }
-    if (!originHost) return s
+      const uri: string | undefined = st?.url;
+      if (!uri) continue;
+      const u = new URL(uri);
+      const originHost = u.host;
 
-    if (await isMisskey(originHost, env.FEDIOAUTH_KV)) {
-      const rx = await fetchMisskeyReactionsByUri(originHost, originUri, env.FEDIOAUTH_KV)
-      if (rx) {
-        const merged: Record<string, number> = { ...(s.mkReactions || {}) }
-        for (const [k, v] of Object.entries(rx)) merged[k] = (merged[k]||0) + (v as number)
-        s.mkReactions = merged
+      const meta = await getMisskeyMeta(env, originHost);
+      if (!meta || !looksLikeMisskey(meta)) continue;
+
+      const ap = await getApShow(env, originHost, uri);
+      const reactions = ap?.object?.reactions || ap?.reactions || null;
+      if (!reactions || typeof reactions !== "object") continue;
+
+      const out: Array<{ name: string; url: string|null; count: number }> = [];
+      for (const k of Object.keys(reactions)) {
+        const count = reactions[k] ?? 0;
+        if (!count) continue;
+        const { kind, name } = parseMkReactionKey(k);
+        if (kind === "unicode") {
+          out.push({ name, url: null, count });
+        } else {
+          const url = resolveEmojiUrlFromMeta(meta, name) || null;
+          out.push({ name, url, count });
+        }
       }
+      if (out.length) st._mkReactions = out;
+    } catch {
+      // ignore per-status failures
     }
-    return s
-  }))
+  }
 
-  return new Response(JSON.stringify(enriched), { headers: { 'content-type': 'application/json' } })
-}
+  return new Response(JSON.stringify({ items: statuses, next_max_id }), {
+    headers: { "content-type": "application/json" }
+  });
+};
