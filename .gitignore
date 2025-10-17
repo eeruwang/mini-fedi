@@ -8,3 +8,6 @@ build/
 # 환경 변수
 .env
 .env.*
+.DS_Store
+node_modules/
+.env
