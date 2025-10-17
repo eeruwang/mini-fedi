@@ -226,11 +226,23 @@ async function renderPostHTML(post, opts) {
     const boosts = post?.reblogs_count ?? 0;
     const replies = post?.replies_count ?? 0;
 
+    // 🔍 Misskey 이모지 해상용: 디버그에 host가 있으면 그 호스트의 커스텀 이모지 목록을 가져와 URL을 보강
+    const mkReHost = post?._mkHost || post?._mkDebug?.host || null;
+    const mkEmojiList = mkReHost ? await getMisskeyEmojis(mkReHost) : [];
+    const resolveMkUrl = (name) => {
+      const em = mkEmojiList.find(e => e?.name === name);
+      return em?.url || null;
+    };
+
     let reactionsHTML = '';
     if (Array.isArray(post?._mkReactions)) {
       const mkBadges = post._mkReactions.map(r => {
-        if (r.url) return `<span class="badge"><img src="${r.url}" alt=":${r.name}:" />${r.count ?? ''}</span>`;
-        return `<span class="badge">${r.name} ${r.count ?? ''}</span>`;
+        const url = r.url || resolveMkUrl(r.name);   // ← 서버가 못 준 URL을 클라에서 보강
+        const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : '';
+        if (url) return `<span class="badge"><img src="${url}" alt=":${r.name}:" />${cnt}</span>`;
+        // URL이 끝내 없어도 텍스트 배지는 남김 (이름을 :name: 형태로 보기 원하면 아래 주석 해제)
+        // return `<span class="badge">:${r.name}: ${cnt}</span>`;
+        return `<span class="badge">${r.name} ${cnt}</span>`;
       }).join('');
       reactionsHTML += mkBadges;
     }
