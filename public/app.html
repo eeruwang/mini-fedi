@@ -178,7 +178,10 @@ function renderEmojisToHTML(textOrHTML, emojiList) {
   for (const e of emojiList) {
     if (!e?.name || !e?.url) continue;
     const re = new RegExp(`:${e.name}:`, 'g');
-    html = html.replace(re, `<img src="${e.url}" alt=":${e.name}:" style="width:1.2em;height:1.2em;vertical-align:-0.2em;">`);
+    html = html.replace(
+      re,
+      `<img src="${e.url}" alt=":${e.name}:" style="height:1.2em;width:auto;vertical-align:-0.2em;aspect-ratio:auto;display:inline-block;">`
+    );
   }
   return html;
 }
@@ -261,7 +264,7 @@ async function renderPostHTML(post, opts) {
         <div class="post-head">
           <img class="avatar" src="${avatarURL}" alt="" loading="lazy">
           <div>
-            <div class="name">${renderEmojisToHTML(escapeHTML(displayName), mastoEmojiMap)} <span class="meta">${handle}</span></div>
+            <div class="name">${renderEmojisToHTML(displayName, mastoEmojiMap)} <span class="meta">${handle}</span></div>
             <div class="meta">${new Date(createdAt).toLocaleString()}</div>
           </div>
         </div>
