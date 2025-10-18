@@ -429,19 +429,49 @@ async function loadMe() {
     const me = await jfetch('/api/me');
     source = 'masto';
     activeHost = getCookie('ap_inst') || '';
-    document.getElementById('acct').textContent = me?.acct ? `@${me.acct}` : me?.username || 'Mastodon';
+
+    // 프로필 표시용 데이터
+    const display = me?.display_name || me?.username || '';
+    const handle  = me?.acct ? `@${me.acct}` : (me?.username ? `@${me.username}` : '');
+
+    // 이모지 맵(프로필 이름에 커스텀 이모지가 있을 수 있음)
+    const list = Array.isArray(me?.emojis)
+      ? me.emojis.map(e => {
+          const name = e?.shortcode || e?.name;
+          const url  = e?.url;
+          return (name && url) ? { name, url } : null;
+        }).filter(Boolean)
+      : [];
+
+    const acctEl = document.getElementById('acct');
+    if (acctEl) {
+      acctEl.innerHTML =
+        `${renderEmojisToHTML(escapeHTML(display), list)} <span class="meta">${escapeHTML(handle)}</span>`;
+    }
+
     myMastoId = me?.id || null;
     myAcct = me?.acct || null;
     return 'masto';
   };
+
   const tryMisskey = async () => {
     const me = await jfetch('/api/mk/me');
     source = 'misskey';
     activeHost = getCookie('mk_host') || '';
-    document.getElementById('acct').textContent = me?.username ? `@${me.username}` : 'Misskey';
+
+    const display = me?.name || me?.username || '';
+    const handle  = me?.username ? `@${me.username}` : '';
+
+    const acctEl = document.getElementById('acct');
+    if (acctEl) {
+      acctEl.innerHTML =
+        `${escapeHTML(display)} <span class="meta">${escapeHTML(handle)}</span>`;
+    }
+
     myMkId = me?.id || null;
     return 'misskey';
   };
+
 
   try {
     if (preferMasto) return await tryMasto();
