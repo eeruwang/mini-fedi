@@ -158,9 +158,13 @@ function parseMkReactionKey(key: string) {
   return { kind: "custom" as const, name, host: host || null };
 }
 
+function normalizeName(s: string) {
+  return String(s || "").replace(/^:|:$/g, "").trim().toLowerCase();
+}
 function resolveEmojiUrlFromMeta(meta: any, name: string) {
   const list = Array.isArray(meta?.emojis) ? meta.emojis : [];
-  const found = list.find((e: any) => e?.name === name);
+  const n = normalizeName(name);
+  const found = list.find((e: any) => normalizeName(e?.name) === n);
   return found?.url || found?.uri || found?.publicUrl || null;
 }
 
@@ -357,6 +361,10 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
                 // 별칭이 유니코드로 직접 매핑되는 경우
                 out.push({ name: alias.char, url: null, count, char: alias.char });
                 continue;
+              }
+              // 🔧 콜론이 없어도 메타에 같은 이름이 있으면 custom로 간주
+              if (kindInfo.kind === "unicode" && meta && resolveEmojiUrlFromMeta(meta, kindInfo.name)) {
+                kindInfo = { kind: "custom", name: kindInfo.name, host: null };
               }
 
               if (kindInfo.kind === "unicode") {
