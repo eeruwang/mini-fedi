@@ -264,11 +264,13 @@ async function renderPostHTML(post, opts) {
     }
 
     // 이 아래줄은 그대로 유지
+    const likeTargetId = (post?.reblog?.id) ? post.reblog.id : post.id;
     reactionsHTML += `
       <span class="badge">💬 ${replies}</span>
       <span class="badge">♺ ${boosts}</span>
-      <button class="badge like-btn" data-id="${post.id}" title="Like">⭐ ${faves}</button>
+      <button class="badge like-btn" data-id="${likeTargetId}" title="Like">⭐ ${faves}</button>
     `;
+
 
     const debugOn = new URL(location.href).searchParams.get('debug') === '1';
     const debugHTML = (debugOn && post?._mkDebug)
@@ -490,10 +492,13 @@ document.getElementById('logout').addEventListener('click', async () => {
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('.like-btn');
   if (!btn) return;
+
   const id = btn.dataset.id;
-  btn.disabled = true;
+  if (!id) { console.error('like: missing data-id'); return; }
+
   const orig = btn.textContent;
-  btn.textContent = '⭐...';
+  btn.disabled = true;
+  btn.textContent = '⭐…';
   try {
     const res = await fetch('/api/like', {
       method: 'POST',
@@ -501,24 +506,30 @@ document.addEventListener('click', async (ev) => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (res.ok) {
-      btn.textContent = '⭐ +1';
-      btn.style.background = 'var(--btn-bg-hover)';
-    } else {
-      const err = await res.text();
-      console.error('Like failed:', err);
+    const text = await res.text().catch(()=>'');
+
+    if (!res.ok) {
+      console.error('like failed', res.status, text);
       btn.textContent = '⭐!';
+      // 401이면 마스토돈 세션 만료/없음
+      if (res.status === 401) btn.title = 'Mastodon 로그인 필요(세션 만료)';
+      else btn.title = `Like failed: ${res.status}`;
+      return;
     }
+
+    // 성공
+    btn.textContent = '⭐ +1';
+    btn.title = 'Liked!';
+    btn.style.background = 'var(--btn-bg-hover)';
   } catch (e) {
-    console.error(e);
+    console.error('like error', e);
     btn.textContent = '⭐×';
+    btn.title = 'Network error';
   } finally {
-    setTimeout(() => {
-      btn.disabled = false;
-      btn.textContent = orig;
-    }, 1500);
+    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 1200);
   }
 });
+
 
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 

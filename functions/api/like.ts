@@ -49,16 +49,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ request }) => {
     });
 
     if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      return new Response(
-        JSON.stringify({
-          error: "favourite failed",
-          status: res.status,
-          body: txt,
-        }),
-        { status: res.status, headers: { "content-type": "application/json" } }
-      );
+        const txt = await res.text().catch(()=>'');
+        return new Response(
+            JSON.stringify({ ok:false, reason:'favourite failed', status: res.status, body: txt }),
+            { status: res.status, headers: { "content-type": "application/json" } }
+        );
     }
+
 
     // ⬇️ 핵심: unknown → 명시 캐스팅 + 안전 폴백
     const json = (await res.json()) as unknown as Partial<MastoStatusMinimal>;
