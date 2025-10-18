@@ -323,17 +323,29 @@ try {
 /* =========================
    Emoji map (Misskey & Masto)
    ========================= */
-const emojiMapCache = new Map(); // host -> [{name,url}]
+const emojiMapCache = new Map();      // host -> [{name,url}]
+const emojiMapPromise = new Map();    // host -> Promise
+
 async function getMisskeyEmojis(host) {
   if (!host) return [];
   if (emojiMapCache.has(host)) return emojiMapCache.get(host);
-  try {
-    const data = await jfetch(`/api/mk/meta?host=${encodeURIComponent(host)}`);
-    const list = Array.isArray(data?.emojis) ? data.emojis : [];
-    emojiMapCache.set(host, list);
-    return list;
-  } catch { return []; }
+  if (emojiMapPromise.has(host)) return emojiMapPromise.get(host);
+
+  const p = jfetch(`/api/mk/meta?host=${encodeURIComponent(host)}`)
+    .then(data => {
+      const list = Array.isArray(data?.emojis) ? data.emojis : [];
+      emojiMapCache.set(host, list);
+      emojiMapPromise.delete(host);
+      return list;
+    })
+    .catch(() => {
+      emojiMapPromise.delete(host);
+      return [];
+    });
+  emojiMapPromise.set(host, p);
+  return p;
 }
+
 function buildMastoEmojiMap(status) {
   const all = [];
   if (Array.isArray(status?.emojis)) all.push(...status.emojis);
