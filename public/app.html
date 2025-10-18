@@ -240,13 +240,23 @@ async function renderPostHTML(post, opts) {
     let reactionsHTML = '';
     if (Array.isArray(post?._mkReactions)) {
       const mkBadges = post._mkReactions.map(r => {
-        const url = r.url || resolveMkUrl(r.name);
         const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : '';
-        if (url) return `<span class="badge"><img src="${url}" alt=":${r.name}:" />${cnt}</span>`;
-        return `<span class="badge">${r.name} ${cnt}</span>`;
+        const url = r.url || (r.name && resolveMkUrl(r.name));
+        if (!url && r.char) {
+          // 유니코드 별칭 이모지 (❤️, 😺 등)
+          return `<span class="badge">${r.char} ${cnt}</span>`;
+        }
+        if (url) {
+          // 커스텀 이모지 이미지
+          return `<span class="badge"><img src="${url}" alt=":${r.name || ''}:" />${cnt}</span>`;
+        }
+        // URL도 char도 없을 때 폴백 (텍스트로)
+        return `<span class="badge">${r.name ?? ''} ${cnt}</span>`;
       }).join('');
       reactionsHTML += mkBadges;
     }
+
+    // 이 아래줄은 그대로 유지
     reactionsHTML += `<span class="badge">💬 ${replies}</span><span class="badge">♺ ${boosts}</span><span class="badge">⭐ ${faves}</span>`;
 
     const debugOn = new URL(location.href).searchParams.get('debug') === '1';

@@ -55,6 +55,31 @@ function limiter(concurrency: number) {
 // ---------- Misskey helpers (KV + memory cached) ----------
 const metaMem = new Map<string, any>(); // host -> meta
 
+// ⬇️⬇️ 여기 아래에 'resolveAliasFromMeta' 함수를 그대로 붙여넣기
+function resolveAliasFromMeta(meta: any, key: string) {
+  // Misskey 계열마다 저장 위치가 달라서 몇 군데를 탐색
+  const maps = [
+    meta?.reactionEmojis,                // Misskey
+    meta?.reactions,                     // 일부 포크
+    meta?.reactionsConfig?.reactions     // 또 다른 포크 표기
+  ].find(m => m && typeof m === 'object') as Record<string, unknown> | undefined;
+
+  if (!maps) return null;
+  const v = maps[key];
+  if (typeof v !== 'string') return null;
+
+  const s = v.trim();
+  // ":name:" 또는 ":name@host:" 같은 커스텀 이모지 별칭
+  if (/^:.*:$/.test(s)) {
+    const nameHost = s.slice(1, -1); // 양쪽 콜론 제거
+    const [name, host] = nameHost.split('@');
+    return { kind: 'custom' as const, name, host: host || null };
+  }
+  // 유니코드 문자(예: ❤️)로 매핑된 별칭
+  return { kind: 'unicode' as const, char: s };
+}
+
+
 async function getMisskeyMeta(env: Env, host: string) {
   if (metaMem.has(host)) return metaMem.get(host);
   const kvKey = `mkmeta:${host}`;
@@ -239,18 +264,43 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
         }
 
         const meta = metaMem.get(job.host) || null;
-        const out: Array<{ name: string; url: string|null; count: number }> = [];
+        // char(유니코드) 지원을 위해 char?: string 필드 추가
+        const out: Array<{ name: string; url: string | null; count: number; char?: string }> = [];
+
         for (const k of Object.keys(reactions)) {
           const count = reactions[k] ?? 0;
           if (!count) continue;
-          const { kind, name } = parseMkReactionKey(k);
-          if (kind === "unicode") out.push({ name, url: null, count });
-          else {
+
+          // 기본 분류 (콜론 존재 여부)
+          let kindInfo = parseMkReactionKey(k);
+
+          // 콜론이 없는 키(우리 로직상 'unicode')일 때 → meta 별칭 해석 시도
+          if (kindInfo.kind === 'unicode' && meta) {
+            const alias = resolveAliasFromMeta(meta, k);
+            if (alias) {
+              if (alias.kind === 'custom') {
+                // 별칭이 커스텀 이모지라면 name을 치환
+                kindInfo = { kind: 'custom', name: alias.name, host: alias.host };
+              } else {
+                // 유니코드 문자 매핑이면 문자로 바로 추가
+                out.push({ name: alias.char, url: null, count, char: alias.char });
+                continue;
+              }
+            }
+          }
+
+          if (kindInfo.kind === 'unicode') {
+            // 진짜 텍스트/유니코드(별칭 아님)
+            out.push({ name: kindInfo.name, url: null, count, char: kindInfo.name });
+          } else {
+            // 커스텀 이모지 URL 해상 (meta 우선, 없으면 AP tag)
+            const name = kindInfo.name;
             const url1 = meta ? resolveEmojiUrlFromMeta(meta, name) : null;
             const url2 = resolveEmojiUrlFromApTag(obj, name);
             out.push({ name, url: url1 || url2 || null, count });
           }
         }
+
 
         if (out.length) {
           st._mkReactions = out;
