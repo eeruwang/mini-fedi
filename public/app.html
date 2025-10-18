@@ -57,6 +57,13 @@
     a:hover { text-decoration: underline; }
     .post-head { display:flex; gap:10px; align-items:center; margin-bottom:4px; }
     .avatar { width:42px; height:42px; border-radius:999px; object-fit:cover; background:#222; flex:0 0 42px; }
+    .like-btn {
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+    .like-btn:hover {
+      background: var(--btn-bg-hover);
+    }
   </style>
 </head>
 <body>
@@ -257,7 +264,11 @@ async function renderPostHTML(post, opts) {
     }
 
     // 이 아래줄은 그대로 유지
-    reactionsHTML += `<span class="badge">💬 ${replies}</span><span class="badge">♺ ${boosts}</span><span class="badge">⭐ ${faves}</span>`;
+    reactionsHTML += `
+      <span class="badge">💬 ${replies}</span>
+      <span class="badge">♺ ${boosts}</span>
+      <button class="badge like-btn" data-id="${post.id}" title="Like">⭐ ${faves}</button>
+    `;
 
     const debugOn = new URL(location.href).searchParams.get('debug') === '1';
     const debugHTML = (debugOn && post?._mkDebug)
@@ -475,6 +486,40 @@ document.getElementById('logout').addEventListener('click', async () => {
     location.href = '/';
   }
 });
+// 좋아요(⭐) 버튼 클릭
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('.like-btn');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '⭐...';
+  try {
+    const res = await fetch('/api/like', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    if (res.ok) {
+      btn.textContent = '⭐ +1';
+      btn.style.background = 'var(--btn-bg-hover)';
+    } else {
+      const err = await res.text();
+      console.error('Like failed:', err);
+      btn.textContent = '⭐!';
+    }
+  } catch (e) {
+    console.error(e);
+    btn.textContent = '⭐×';
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = orig;
+    }, 1500);
+  }
+});
+
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
 // infinite scroll (disconnect 지원)
