@@ -91,14 +91,13 @@ async function jfetch(url, opts = {}) {
   if (!r.ok) {
     const text = await r.text().catch(() => '');
     const err = new Error(`${r.status} ${r.statusText}`);
-    // @ts-ignore - 편의상 속성 추가
+    // @ts-ignore
     err.status = r.status; err.body = text;
     throw err;
   }
   const ct = r.headers.get('content-type') || '';
   return ct.includes('application/json') ? r.json() : r.text();
 }
-
 
 /* =========================
    Theme toggle
@@ -226,9 +225,13 @@ async function renderPostHTML(post, opts) {
     const boosts = post?.reblogs_count ?? 0;
     const replies = post?.replies_count ?? 0;
 
-    // 🔍 Misskey 이모지 해상용: 디버그에 host가 있으면 그 호스트의 커스텀 이모지 목록을 가져와 URL을 보강
-    const mkReHost = post?._mkHost || post?._mkDebug?.host || null;
-    const mkEmojiList = mkReHost ? await getMisskeyEmojis(mkReHost) : [];
+    // Misskey 이모지 해상: 필요할 때만 호출 (url 없는 항목이 있을 때)
+    let mkEmojiList = [];
+    const needMkEmoji = Array.isArray(post?._mkReactions) && post._mkReactions.some(r => !r.url);
+    if (needMkEmoji) {
+      const mkReHost = post?._mkHost || post?._mkDebug?.host || null;
+      mkEmojiList = mkReHost ? await getMisskeyEmojis(mkReHost) : [];
+    }
     const resolveMkUrl = (name) => {
       const em = mkEmojiList.find(e => e?.name === name);
       return em?.url || null;
@@ -237,11 +240,9 @@ async function renderPostHTML(post, opts) {
     let reactionsHTML = '';
     if (Array.isArray(post?._mkReactions)) {
       const mkBadges = post._mkReactions.map(r => {
-        const url = r.url || resolveMkUrl(r.name);   // ← 서버가 못 준 URL을 클라에서 보강
+        const url = r.url || resolveMkUrl(r.name);
         const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : '';
         if (url) return `<span class="badge"><img src="${url}" alt=":${r.name}:" />${cnt}</span>`;
-        // URL이 끝내 없어도 텍스트 배지는 남김 (이름을 :name: 형태로 보기 원하면 아래 주석 해제)
-        // return `<span class="badge">:${r.name}: ${cnt}</span>`;
         return `<span class="badge">${r.name} ${cnt}</span>`;
       }).join('');
       reactionsHTML += mkBadges;
@@ -331,7 +332,6 @@ function hasMisskeyCookies() {
 }
 
 async function loadMe() {
-  // 쿠키 힌트로 우선 순위 결정(있을 확률 높은 쪽 먼저)
   const preferMasto = hasMastoCookies();
   const preferMisskey = hasMisskeyCookies();
 
@@ -353,15 +353,12 @@ async function loadMe() {
   try {
     if (preferMasto) return await tryMasto();
     if (preferMisskey) return await tryMisskey();
-    // 쿠키 힌트 없으면 Mastodon 먼저
     return await tryMasto();
   } catch {
     try {
-      // 첫 시도 실패하면 다른 쪽 시도
       if (source !== 'misskey') return await tryMisskey();
       return await tryMasto();
     } catch (e) {
-      // 둘 다 실패 → 로그인 페이지로
       source = null;
       alert('세션이 만료되었거나 로그인 정보가 없습니다. 다시 로그인해 주세요.');
       location.href = '/';
@@ -369,7 +366,6 @@ async function loadMe() {
     }
   }
 }
-
 
 let io; // observer 핸들
 
@@ -387,23 +383,34 @@ async function loadPage(initial=false) {
       source === 'masto' ? u.searchParams.set('max_id', cursor)
                          : u.searchParams.set('untilId', cursor);
     }
-    // ↓↓↓ 페이지 URL에 ?debug=1 있으면 같이 붙여서 서버가 디버그를 내도록
     if (new URL(location.href).searchParams.get('debug') === '1') {
       u.searchParams.set('debug', '1');
     }
 
-
     const data = await jfetch(u.toString());
-
     const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
-    const htmlList = await Promise.all(items.map(post => renderPostHTML(post, { source })));
+
+    // 점진 렌더: 자리 먼저 만들고, 준비되는 대로 교체
     const frag = document.createDocumentFragment();
-    for (const html of htmlList) {
-      const div = document.createElement('div');
-      div.innerHTML = html;
-      frag.appendChild(div.firstElementChild);
-    }
+    const placeholders = items.map(() => {
+      const ph = document.createElement('article');
+      ph.className = 'post';
+      ph.innerHTML = '<div class="meta">Loading…</div>';
+      frag.appendChild(ph);
+      return ph;
+    });
     feedEl.appendChild(frag);
+
+    items.forEach(async (post, i) => {
+      try {
+        const html = await renderPostHTML(post, { source });
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = html;
+        placeholders[i].replaceWith(wrapper.firstElementChild);
+      } catch (e) {
+        placeholders[i].innerHTML = '<div class="meta">Failed to render</div>';
+      }
+    });
 
     cursor = (source === 'masto')
       ? (data?.next_max_id || (items.length ? items[items.length-1]?.id : null))
@@ -411,7 +418,6 @@ async function loadPage(initial=false) {
   } catch (e) {
     // @ts-ignore
     if (e?.status === 401) {
-      // Misskey 401이면 Misskey만 만료된 케이스 가능 → Mastodon 쿠키가 있으면 전환 시도
       if (source === 'misskey' && hasMastoCookies()) {
         console.warn('Misskey 401: Mastodon으로 자동 전환합니다.');
         source = 'masto'; cursor = null; feedEl.innerHTML = '';
@@ -428,15 +434,28 @@ async function loadPage(initial=false) {
   }
 }
 
+// 초기 뷰포트 자동 채우기
+async function autofillIfNeeded(maxLoops = 3) {
+  for (let i = 0; i < maxLoops; i++) {
+    const sentinel = document.getElementById('sentinel');
+    if (!sentinel) break;
+    const rect = sentinel.getBoundingClientRect();
+    if (rect.top < window.innerHeight + 200) {
+      await loadPage();
+    } else {
+      break;
+    }
+  }
+}
 
 /* =========================
    UI bindings
    ========================= */
 document.getElementById('tab-home').addEventListener('click', async () => {
-  mode = 'home'; cursor = null; feedEl.innerHTML = ''; await loadPage(true);
+  mode = 'home'; cursor = null; feedEl.innerHTML = ''; await loadPage(true); await autofillIfNeeded();
 });
 document.getElementById('tab-fav').addEventListener('click', async () => {
-  mode = 'fav'; cursor = null; feedEl.innerHTML = ''; await loadPage(true);
+  mode = 'fav'; cursor = null; feedEl.innerHTML = ''; await loadPage(true); await autofillIfNeeded();
 });
 document.getElementById('logout').addEventListener('click', async () => {
   try {
@@ -448,7 +467,6 @@ document.getElementById('logout').addEventListener('click', async () => {
 });
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
-// infinite scroll
 // infinite scroll (disconnect 지원)
 io = new IntersectionObserver(async (entries) => {
   for (const e of entries) {
@@ -461,6 +479,7 @@ io.observe(document.getElementById('sentinel'));
 (async function init() {
   await loadMe();
   await loadPage(true);
+  await autofillIfNeeded();
 })();
 </script>
 </body>

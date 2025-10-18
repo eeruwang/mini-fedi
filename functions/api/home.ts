@@ -12,16 +12,19 @@ function parseCookies(req: Request) {
   });
   return out;
 }
+
 async function sha256Hex(s: string) {
   const data = new TextEncoder().encode(s);
   const hash = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
+
 function parseLinkForNextMaxId(link: string | null): string | null {
   if (!link) return null;
   const m = link.match(/<[^>]*[?&]max_id=([^&>]+)[^>]*>;\s*rel="next"/);
   return m ? decodeURIComponent(m[1]) : null;
 }
+
 async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms = 1500) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), ms);
@@ -31,6 +34,7 @@ async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms =
     clearTimeout(id);
   }
 }
+
 function limiter(concurrency: number) {
   let active = 0;
   const queue: Array<() => void> = [];
@@ -49,8 +53,7 @@ function limiter(concurrency: number) {
 }
 
 // ---------- Misskey helpers (KV + memory cached) ----------
-const metaMem = new Map<string, any>();          // host -> meta
-const apMem   = new Map<string, any>();          // host|uri -> apObject
+const metaMem = new Map<string, any>(); // host -> meta
 
 async function getMisskeyMeta(env: Env, host: string) {
   if (metaMem.has(host)) return metaMem.get(host);
@@ -63,25 +66,26 @@ async function getMisskeyMeta(env: Env, host: string) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
-  });
+  }, 1500);
   if (!res.ok) return null;
   const meta = await res.json();
   metaMem.set(host, meta);
   await env.FEDIOAUTH_KV.put(kvKey, JSON.stringify(meta), { expirationTtl: 86400 });
   return meta;
 }
-// 교체: ap/show 호출 함수
+
+// ap/show (타임아웃 + KV 캐시)
 async function getApShow(env: Env, host: string, apUri: string) {
   const digest = await sha256Hex(apUri);
   const key = `mk:note:${host}:${digest}`;
   const cached = await env.FEDIOAUTH_KV.get(key);
   if (cached) { try { return { status: 200, data: JSON.parse(cached) }; } catch {} }
 
-  const res = await fetch(`https://${host}/api/ap/show`, {
+  const res = await fetchWithTimeout(`https://${host}/api/ap/show`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ uri: apUri }),
-  });
+  }, 1500);
 
   if (!res.ok) return { status: res.status, data: null };
 
@@ -96,11 +100,13 @@ function parseMkReactionKey(key: string) {
   const [name, host] = trimmed.split("@");
   return { kind: "custom" as const, name, host: host || null };
 }
+
 function resolveEmojiUrlFromMeta(meta: any, name: string) {
   const list = Array.isArray(meta?.emojis) ? meta.emojis : [];
   const found = list.find((e: any) => e?.name === name);
   return found?.url || null;
 }
+
 function resolveEmojiUrlFromApTag(apObject: any, name: string): string | null {
   const tags = Array.isArray(apObject?.object?.tag) ? apObject.object.tag
              : Array.isArray(apObject?.tag) ? apObject.tag : [];
@@ -125,11 +131,11 @@ async function getNotesShow(env: Env, host: string, noteId: string) {
   const cached = await env.FEDIOAUTH_KV.get(key);
   if (cached) { try { return { status: 200, data: JSON.parse(cached) }; } catch {} }
 
-  const res = await fetch(`https://${host}/api/notes/show`, {
+  const res = await fetchWithTimeout(`https://${host}/api/notes/show`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ noteId }),
-  });
+  }, 1500);
 
   if (!res.ok) return { status: res.status, data: null };
 
@@ -138,14 +144,9 @@ async function getNotesShow(env: Env, host: string, noteId: string) {
   return { status: 200, data };
 }
 
-
-function looksClearlyMastodonHost(host: string) {
-  // 아주 러프한 스킵 규칙: mastodon/pleroma/akkoma 등은 Misskey 아님
-  return /mastodon|pleroma|akkoma/i.test(host);
-}
-
 // ---------- main ----------
 export const onRequestGet: PagesFunction<Env> = async (ctx) => {
+  const t0 = Date.now();
   const { request, env } = ctx;
   const cookies = parseCookies(request);
   const apToken = cookies["ap_token"];
@@ -165,9 +166,9 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   const mastoURL = new URL(`https://${apInst}/api/v1/timelines/home`);
   if (max_id) mastoURL.searchParams.set("max_id", max_id);
 
-  const res = await fetch(mastoURL.toString(), {
+  const res = await fetchWithTimeout(mastoURL.toString(), {
     headers: { authorization: `Bearer ${apToken}` }
-  });
+  }, 5000);
   if (!res.ok) {
     return new Response(JSON.stringify({ error: `mastodon ${res.status}` }), {
       status: 502, headers: { "content-type": "application/json" }
@@ -182,50 +183,61 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
 
   let mergedCount = 0, triedCount = 0, errorCount = 0;
 
-  // 2) Misskey 리액션 병합 (디버그 기록 포함)
+  // ---- 2) Misskey 리액션 병합 (병렬 처리) ----
+
+  // 후보만 추출: AP URI가 https이고, Misskey 패턴(/notes/<id>)일 때만 시도
+  type Job = { st: any; apUri: string; host: string; noteId: string|null };
+  const jobs: Job[] = [];
   for (const st of statuses) {
+    const apUri: string | undefined = st?.reblog?.uri || st?.uri;
+    if (!apUri || !/^https?:\/\//i.test(apUri)) { if (debug) st._mkDebug = { stage: "skip_no_ap_uri" }; continue; }
+    const noteId = extractMisskeyNoteIdFromApUri(apUri);
+    if (!noteId) {
+      if (debug) st._mkDebug = { stage: "skip_non_misskey_shape", apUri, host: new URL(apUri).host };
+      continue;
+    }
+    jobs.push({ st, apUri, host: new URL(apUri).host, noteId });
+  }
+
+  // 호스트별 meta는 1회만 선행 조회
+  const uniqueHosts = Array.from(new Set(jobs.map(j => j.host)));
+  await Promise.all(uniqueHosts.map(h => getMisskeyMeta(env, h).catch(()=>null)));
+
+  // 동시 6개 제한으로 ap/show → 실패 시 notes/show 폴백
+  const run = limiter(6);
+  await Promise.all(jobs.map(job => run(async () => {
+    const st = job.st;
+    triedCount++;
     try {
-      const apUri: string | undefined = st?.reblog?.uri || st?.uri;
-      if (!apUri || !/^https?:\/\//i.test(apUri)) { if (debug) st._mkDebug = { stage: "skip_no_ap_uri" }; continue; }
-      const originHost = new URL(apUri).host;
+      // 1) ap/show (1.5s 타임아웃)
+      let apRes = await getApShow(env, job.host, job.apUri);
+      let obj = apRes.data?.object || apRes.data || null;
 
-      // 1) ap/show 먼저 시도
-      let apShowResp = await getApShow(env, originHost, apUri);
-      let obj = apShowResp.data?.object || apShowResp.data || null;
-
-      // 2) ap/show 실패(예: 401) → notes/show 폴백
-      if (!obj) {
-        const noteId = extractMisskeyNoteIdFromApUri(apUri);
-        if (noteId) {
-          const { status, data } = await getNotesShow(env, originHost, noteId);
-          if (status === 200 && data) {
-            obj = data; // notes/show는 note 객체를 바로 반환
-            if (debug) st._mkDebug = { stage: "fallback_notes_show_ok", apUri, host: originHost, noteId };
-          } else if (debug) {
-            st._mkDebug = { stage: "no_ap_object_and_notes_show_failed", apUri, host: originHost, noteId, status };
-          }
+      // 2) 실패 시 notes/show 폴백 (1.5s 타임아웃)
+      if (!obj && job.noteId) {
+        const { status, data } = await getNotesShow(env, job.host, job.noteId);
+        if (status === 200 && data) {
+          obj = data;
+          if (debug) st._mkDebug = { stage: "fallback_notes_show_ok", apUri: job.apUri, host: job.host, noteId: job.noteId };
         } else if (debug) {
-          st._mkDebug = { stage: "no_ap_object_no_noteid", apUri, host: originHost, apShowStatus: apShowResp.status };
+          st._mkDebug = { stage: "no_ap_object_and_notes_show_failed", apUri: job.apUri, host: job.host, noteId: job.noteId, status };
         }
+      } else if (debug && !st._mkDebug) {
+        st._mkDebug = { stage: apRes.status === 200 ? "ap_show_ok" : "ap_show_failed", status: apRes.status, apUri: job.apUri, host: job.host };
       }
 
-      if (!obj) continue;
+      if (!obj) return;
 
-      // 3) 리액션 추출 (여러 변형 지원)
-      const reactions =
-        obj?.reactions ||
-        obj?.reactionCounts ||
-        null;
-
+      // 3) reactions 추출
+      const reactions = obj?.reactions || obj?.reactionCounts || null;
       if (!reactions || typeof reactions !== "object") {
-        if (debug) st._mkDebug = { ...(st._mkDebug||{}), stage: "no_reactions", keys: Object.keys(obj||{}) };
-        continue;
+        if (debug) st._mkDebug = { ...(st._mkDebug||{}), stage: "no_reactions" };
+        return;
       }
 
-      // 4) 이모지 URL 해상 (meta + AP tag)
-      const meta = await getMisskeyMeta(env, originHost).catch(()=>null);
+      // 4) 이모지 URL 해상(meta or AP tag)
+      const meta = metaMem.get(job.host) || null;
       const out: Array<{ name: string; url: string|null; count: number }> = [];
-
       for (const k of Object.keys(reactions)) {
         const count = reactions[k] ?? 0;
         if (!count) continue;
@@ -234,28 +246,31 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
           out.push({ name, url: null, count });
         } else {
           const url1 = meta ? resolveEmojiUrlFromMeta(meta, name) : null;
-          const url2 = resolveEmojiUrlFromApTag(obj, name); // obj에 tag가 있으면 그걸로도 해상
+          const url2 = resolveEmojiUrlFromApTag(obj, name);
           out.push({ name, url: url1 || url2 || null, count });
         }
       }
 
       if (out.length) {
         st._mkReactions = out;
-        if (debug) st._mkDebug = { ...(st._mkDebug||{}), stage: (st._mkDebug?.stage ?? "ok"), merged: out.length };
+        mergedCount++;
+        if (debug) st._mkDebug = { ...(st._mkDebug||{}), stage: (st._mkDebug?.stage ?? "ok"), merged: out.length, host: job.host };
       } else if (debug) {
-        st._mkDebug = { ...(st._mkDebug||{}), stage: "empty_after_parse", keys: Object.keys(reactions) };
+        st._mkDebug = { ...(st._mkDebug||{}), stage: "empty_after_parse" };
       }
-    } catch (e: any) {
+    } catch (e:any) {
+      errorCount++;
       if (debug) st._mkDebug = { stage: "error", message: String(e) };
     }
-  }
+  })));
 
-
+  const elapsed = Date.now() - t0;
   const body = JSON.stringify({ items: statuses, next_max_id });
   return new Response(body, {
     headers: {
       "content-type": "application/json",
-      "x-mk-merge-summary": `tried=${triedCount}; merged=${mergedCount}; errors=${errorCount}`
+      "x-mk-merge-summary": `tried=${triedCount}; merged=${mergedCount}; errors=${errorCount}`,
+      "x-mk-merge-ms": String(elapsed)
     }
   });
 };
