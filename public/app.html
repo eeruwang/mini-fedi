@@ -481,23 +481,24 @@ async function loadPage(initial=false) {
     }
 
     const data = await jfetch(u.toString());
-    let items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+
+    // ⬅️ 원본 목록을 따로 보관 (커서 계산은 이걸로!)
+    const rawItems = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+    let items = rawItems;
 
     // ✅ “Mine” 모드: 내 글만 필터링
     if (mode === 'mine') {
       if (source === 'masto' && myMastoId) {
-        items = items.filter(p => {
+        items = rawItems.filter(p => {
           const base = p?.reblog ? p.reblog : p;
           return base?.account?.id === myMastoId;
         });
       } else if (source === 'misskey' && myMkId) {
-        items = items.filter(p => p?.user?.id === myMkId);
+        items = rawItems.filter(p => p?.user?.id === myMkId);
       } else {
-        // ID를 아직 못 받았으면 일단 비움
         items = [];
       }
     }
-
 
     // 점진 렌더: 자리 먼저 만들고, 준비되는 대로 교체
     const frag = document.createDocumentFragment();
@@ -522,8 +523,8 @@ async function loadPage(initial=false) {
     });
 
     cursor = (source === 'masto')
-      ? (data?.next_max_id || (items.length ? items[items.length-1]?.id : null))
-      : (data?.next || (items.length ? items[items.length-1]?.id : null));
+      ? (data?.next_max_id || (rawItems.length ? rawItems[rawItems.length-1]?.id : null))
+      : (data?.next || (rawItems.length ? rawItems[rawItems.length-1]?.id : null));
   } catch (e) {
     // @ts-ignore
     if (e?.status === 401) {

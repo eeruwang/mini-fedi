@@ -1,3 +1,4 @@
+//functions/api/me.ts
 /// <reference types="@cloudflare/workers-types" />
 import type { PagesFunction } from "@cloudflare/workers-types";
 
