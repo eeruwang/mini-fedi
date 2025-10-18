@@ -1171,13 +1171,6 @@ io = new IntersectionObserver(async (entries) => {
 }, { rootMargin: '600px' });
 io.observe(document.getElementById('sentinel'));
 
-(async function init() {
-  await loadMe();
-  await loadPage(true);
-  await autofillIfNeeded();
-})();
-
-
 // init
 (async function init() {
   await loadMe();
