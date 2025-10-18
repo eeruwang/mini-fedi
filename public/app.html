@@ -376,20 +376,66 @@ function stopPolling() {
 
 async function checkForUpdates() {
   try {
-    // 홈일 때만 체크(원하면 조건 제거)
-    if (!source || mode !== 'home') return;
+    if (!source || mode !== 'home' || !lastTopId) return;
 
-    const url = source === 'masto' ? '/api/home?merge=0' : '/api/mk/home';
-    const data = await jfetch(url);
+    // since_id=lastTopId 로 "그 이후 새 글만" 요청
+    const base = source === 'masto' ? '/api/home' : '/api/mk/home';
+    const url = new URL(base, location.origin);
+    url.searchParams.set('merge', '0');          // 가벼운 응답
+    url.searchParams.set('limit', '20');         // 한 번에 최대 20개까지
+    url.searchParams.set('since_id', lastTopId); // ⬅️ 핵심
+
+    const data = await jfetch(url.toString());
     const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
     if (!items.length) return;
 
-    const newTopId = getIdFromPost(items[0]);
-    if (newTopId && lastTopId && newTopId !== lastTopId) {
-      showNewPostBanner();
+    // 새 글은 서버가 "최신→오래된" 순으로 줄 가능성이 크니,
+    // DOM에 넣을 땐 반대로(오래된→최신) 순서로 prepend 해야 자연스러움
+    const toPrepend = [...items].reverse();
+
+    // 현재 스크롤이 많이 내려가 있으면 갑작스런 점프 방지 (선택)
+    const nearTop = window.scrollY < 80;
+
+    for (const post of toPrepend) {
+      const html = await renderPostHTML(post, { source });
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = html;
+      const node = wrapper.firstElementChild;
+
+      // 상단에 꽂기
+      if (feedEl.firstChild) feedEl.insertBefore(node, feedEl.firstChild);
+      else feedEl.appendChild(node);
     }
+
+    // 새 최상단 id 로 갱신
+    const newest = toPrepend[toPrepend.length - 1];
+    const newTopId = newest?.reblog?.id ?? newest?.id ?? null;
+    if (newTopId) lastTopId = newTopId;
+
+    // 살짝 강조 애니메이션 (선택)
+    try {
+      for (let i = 0; i < toPrepend.length; i++) {
+        const el = feedEl.children[i];
+        el.style.transition = 'background-color .8s ease';
+        el.style.backgroundColor = 'color-mix(in oklab, var(--link) 12%, var(--card))';
+        setTimeout(() => { el.style.backgroundColor = ''; }, 50);
+        setTimeout(() => { el.style.transition = ''; }, 900);
+      }
+    } catch {}
+
+    // 스크롤 상단 유지 (옵션)
+    if (nearTop) {
+      // 아무 것도 안 해도 되지만, 필요하면 스크롤 미세 조정 가능
+    }
+
+    // 너무 길어지는 것 방지 (옵션: 400개 초과 시 하단부터 제거)
+    const MAX_POSTS = 400;
+    while (feedEl.children.length > MAX_POSTS) {
+      feedEl.removeChild(feedEl.lastElementChild);
+    }
+
   } catch (e) {
-    console.warn('Update check failed', e);
+    console.warn('Auto refresh failed', e);
   }
 }
 
