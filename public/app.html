@@ -215,6 +215,19 @@
 
     /* ====== Utilities ====== */
     .muted { color: var(--muted); }
+
+    /* 리블로그 배너/유저칩의 미니 아바타 고정 크기 */
+    .user-chip .avatar-mini,
+    .reblog-banner .avatar-mini {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      object-fit: cover;
+      background: #222;
+      flex: 0 0 16px;
+      aspect-ratio: 1 / 1;
+    }
+
   </style>
 </head>
 <body>
