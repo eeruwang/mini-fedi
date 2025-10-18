@@ -20,9 +20,16 @@ export const onRequestGet: PagesFunction = async ({ request }) => {
   if (!info.ok) {
     return new Response(`instance meta ${info.status}`, { status: 502 });
   }
-  const meta = await info.json();
-  let streamingBase: string =
-    meta?.urls?.streaming_api || `https://${inst}`; // fallback
+
+  // ✅ 타입 정의 추가
+  type InstanceMeta = {
+    urls?: {
+      streaming_api?: string;
+    };
+  };
+
+  const meta = (await info.json()) as InstanceMeta;
+  let streamingBase: string = meta.urls?.streaming_api || `https://${inst}`; // fallback
 
   // 2) SSE는 http(s) 필요. wss:// 로 오면 https:// 로 치환
   streamingBase = streamingBase.replace(/^wss:\/\//i, "https://");

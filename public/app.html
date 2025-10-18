@@ -227,6 +227,23 @@
       flex: 0 0 16px;
       aspect-ratio: 1 / 1;
     }
+    /* 새 글 슬라이드 인 애니메이션 */
+    .post.slide-enter {
+      transform: translateY(-14px);
+      opacity: 0;
+    }
+    .post.slide-enter-active {
+      transform: translateY(0);
+      opacity: 1;
+      transition: transform .28s ease, opacity .28s ease;
+    }
+
+    /* 아래 spacer는 기존 포스트들이 "밀려 내려가는" 연출용 */
+    .new-spacer {
+      height: 0px;
+      transition: height .28s ease;
+    }
+
 
   </style>
 </head>
@@ -863,28 +880,62 @@ function postKey(item) {
 }
 
 // 새 글을 DOM 맨 위에 삽입
+// 새 글을 "위에서 내려오듯" 애니메이션으로 삽입
 async function prependStatus(st) {
   const key = postKey(st);
   if (!key) return;
-  if (seenIds.has(key)) return;       // 중복 방지
+  if (seenIds.has(key)) return;
   seenIds.add(key);
-  // 너무 커지지 않게 관리
-  if (seenIds.size > 5000) {
-    // 대충 정리
-    for (const k of seenIds.values()) { seenIds.delete(k); if (seenIds.size <= 2500) break; }
-  }
+  if (seenIds.size > 5000) { for (const k of seenIds) { seenIds.delete(k); if (seenIds.size <= 2500) break; } }
 
+  // 렌더 결과 노드 만들기
   const html = await renderPostHTML(st, { source: 'masto' });
   const wrap = document.createElement('div');
   wrap.innerHTML = html;
   const node = wrap.firstElementChild;
   if (!node) return;
 
-  // thread 컨테이너까지 포함되어 있으므로 그냥 통째로
-  const first = feedEl.firstElementChild;
-  if (first) feedEl.insertBefore(node, first);
-  else feedEl.appendChild(node);
+  // 1) 먼저 측정용으로 DOM에 잠깐 붙여서 높이 구함(보이진 않게)
+  node.style.position = 'absolute';
+  node.style.visibility = 'hidden';
+  node.style.pointerEvents = 'none';
+  feedEl.insertBefore(node, feedEl.firstChild || null);
+  const h = node.getBoundingClientRect().height || 0;
+  // 측정 후 스타일 초기화
+  node.style.position = '';
+  node.style.visibility = '';
+  node.style.pointerEvents = '';
+
+  // 2) 기존 목록이 '밀려 내려가는' 느낌을 주기 위한 spacer
+  const spacer = document.createElement('div');
+  spacer.className = 'new-spacer';
+  spacer.style.height = h + 'px'; // 처음엔 새 글 높이만큼 차지
+  feedEl.insertBefore(spacer, node); // spacer가 더 위, node가 그 아래(=실제 첫 카드 자리)
+
+  // 3) 새 글에 슬라이드 인 클래스 적용
+  node.classList.add('slide-enter');
+  // 리플로우 강제 후 활성화
+  // eslint-disable-next-line no-unused-expressions
+  node.getBoundingClientRect();
+  node.classList.add('slide-enter-active');
+
+  // 4) 애니메이션 시작: spacer는 0으로 줄이고, 카드는 위에서 내려오며 보임
+  requestAnimationFrame(() => {
+    spacer.style.height = '0px';
+  });
+
+  // 5) 애니메이션 종료 후 정리
+  const done = () => {
+    node.classList.remove('slide-enter', 'slide-enter-active');
+    spacer.remove();
+    node.removeEventListener('transitionend', done);
+  };
+  node.addEventListener('transitionend', done, { once: true });
+
+  // 혹시 첫 글이 없으면 그냥 append
+  if (!feedEl.firstElementChild) feedEl.appendChild(node);
 }
+
 
 function startStream() {
   if (es || source !== 'masto') return;
