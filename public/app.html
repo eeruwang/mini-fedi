@@ -627,13 +627,21 @@ document.getElementById('logout').addEventListener('click', async () => {
   }
 });
 // 이름(계정 칩) 클릭 시 "내 글" 피드로
-document.getElementById('acct-btn')?.addEventListener('click', async () => {
-  mode = 'mine';
-  cursor = null;
-  feedEl.innerHTML = '';
-  await loadPage(true);
-  await autofillIfNeeded();
+document.addEventListener('DOMContentLoaded', () => {
+  const acctBtn = document.getElementById('acct-btn');
+  if (acctBtn) {
+    acctBtn.addEventListener('click', async () => {
+      mode = 'mine';
+      cursor = null;
+      feedEl.innerHTML = '';
+      await loadPage(true);
+      await autofillIfNeeded();
+    });
+  } else {
+    console.warn('⚠️ acct-btn not found — check header markup');
+  }
 });
+
 // 좋아요(⭐) 버튼 클릭
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('.like-btn');
