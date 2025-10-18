@@ -512,7 +512,8 @@ async function checkForUpdates() {
     const url = new URL(base, location.origin);
     url.searchParams.set('merge', '0');          // 가벼운 응답
     url.searchParams.set('limit', '20');         // 한 번에 최대 20개까지
-    url.searchParams.set('since_id', lastTopId); // ⬅️ 핵심
+    if (source === 'masto') url.searchParams.set('since_id', lastTopId); // ⬅️ 핵심
+    else url.searchParams.set('sinceId', lastTopId);   // ← Misskey는 카멜
 
     const data = await jfetch(url.toString());
     const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
@@ -595,7 +596,7 @@ function showNewPostBanner() {
 // 탭이 백그라운드로 가면 폴링 잠깐 멈추기(낭비 방지)
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopPolling();
-  else if (mode === 'home') startPolling();
+  else if (mode === 'home' && source === 'misskey') startPolling();
 });
 
 
@@ -1061,7 +1062,7 @@ async function prependStatus(st) {
 
 function startStream() {
   if (es || source !== 'masto') return;
-  es = new EventSource('/api/stream', { withCredentials: true });
+  es = new EventSource('/api/stream/user', { withCredentials: true });
 
   es.addEventListener('open', () => {
     // console.debug('SSE open');
@@ -1109,12 +1110,13 @@ document.getElementById('tab-home').addEventListener('click', async () => {
   feedEl.innerHTML = '';
   await loadPage(true);
   await autofillIfNeeded();
-  startStream();     // ⬅️ 홈 진입 시 스트리밍 시작
+  if (source === 'masto') startStream();     // ⬅️ 홈 진입 시 스트리밍 시작
+  else if (source === 'misskey') startPolling();
 });
 
 document.getElementById('tab-fav').addEventListener('click', async () => {
   mode = 'fav';
-  stopStream();      // ⬅️ 홈 이탈 시 정지
+  stopPolling();      // ⬅️ 홈 이탈 시 정지
   cursor = null; feedEl.innerHTML = '';
   await loadPage(true); await autofillIfNeeded();
 });
@@ -1125,6 +1127,7 @@ document.addEventListener('click', async (ev) => {
   if (!btn) return;
   mode = 'mine';
   stopStream();      // ⬅️ 홈 이탈 시 정지
+  stopPolling();
   cursor = null;
   feedEl.innerHTML = '';
   await loadPage(true);
@@ -1300,9 +1303,11 @@ io.observe(document.getElementById('sentinel'));
   await autofillIfNeeded();
 
   // 첫 진입이 홈이면 폴링 시작
-  if (mode === 'home' && source === 'masto') startStream(); // ⬅️
+  if (mode === 'home') {
+    if (source === 'masto') startStream();
+    else if (source === 'misskey') startPolling();
+  }
 })();
-
 </script>
 </body>
 </html>
