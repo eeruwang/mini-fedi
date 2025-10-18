@@ -55,7 +55,8 @@ export const onRequestGet: PagesFunction = async ({ request }) => {
     status: 200,
     headers: {
       "content-type": "text/event-stream",
-      "cache-control": "no-store",
+      "cache-control": "no-cache, no-store, must-revalidate",
+      "pragma": "no-cache",
       "connection": "keep-alive",
       // 일부 프록시가 버퍼링 못하게:
       "x-accel-buffering": "no",

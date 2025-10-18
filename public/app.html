@@ -803,10 +803,12 @@ async function loadPage(initial=false) {
 
 
     const u = new URL(path, location.origin);
+    u.searchParams.set('limit', '20');   // ⬅️ 첫 페이지 20개만
     if (cursor) {
       source === 'masto' ? u.searchParams.set('max_id', cursor)
-                         : u.searchParams.set('untilId', cursor);
+                        : u.searchParams.set('untilId', cursor);
     }
+
     if (new URL(location.href).searchParams.get('debug') === '1') {
       u.searchParams.set('debug', '1');
     }
@@ -951,7 +953,7 @@ async function prependStatus(st) {
 
 function startStream() {
   if (es || source !== 'masto') return;
-  es = new EventSource('/api/stream/user', { withCredentials: true });
+  es = new EventSource('/api/stream', { withCredentials: true });
 
   es.addEventListener('open', () => {
     // console.debug('SSE open');
