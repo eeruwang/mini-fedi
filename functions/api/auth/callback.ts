@@ -1,77 +1,90 @@
+// functions/api/auth/callback.ts
 /// <reference types="@cloudflare/workers-types" />
 import type { PagesFunction, KVNamespace } from "@cloudflare/workers-types";
 
+// start.ts에 쓴 버전과 반드시 동일해야 함!
+const APP_VER = 2;
+
 type Env = { FEDIOAUTH_KV: KVNamespace };
 
-type MastodonToken = {
-  access_token: string;
-  token_type?: string;
-  scope?: string;
-  created_at?: number;
-};
-
-function isMastoToken(x: any): x is MastodonToken {
-  return x && typeof x.access_token === "string";
-}
-
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
-  const u = new URL(request.url);
-  const code = u.searchParams.get("code");
-  const state = u.searchParams.get("state");
-  if (!code || !state) return new Response("Bad Request", { status: 400 });
+  const url = new URL(request.url);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
 
-  const entry = await env.FEDIOAUTH_KV.get(`state:${state}`, { type: "json" }) as any | null;
-  if (!entry) return new Response("State expired", { status: 400 });
-  const { iss, verifier } = entry as { iss: string; verifier: string };
-  await env.FEDIOAUTH_KV.delete(`state:${state}`);
+  if (!code || !state) {
+    return new Response("Missing code/state", { status: 400 });
+  }
 
-  const app = await env.FEDIOAUTH_KV.get(`app:${iss}`, { type: "json" }) as any | null;
-  if (!app) return new Response("App not found", { status: 400 });
+  // 1) state에서 iss, verifier 복구
+  const saved = await env.FEDIOAUTH_KV.get(`state:${state}`, { type: "json" }) as
+    | { iss?: string; verifier?: string }
+    | null;
 
-  const tok = await fetch(`https://${iss}/oauth/token`, {
+  if (!saved?.iss || !saved?.verifier) {
+    return new Response("Invalid or expired state", { status: 400 });
+  }
+  const iss = saved.iss;
+  const verifier = saved.verifier;
+
+  // 2) 앱 등록 정보 로드 (start.ts와 동일 키)
+  const appKey = `app:v${APP_VER}:${iss}`;
+  const app = (await env.FEDIOAUTH_KV.get(appKey, { type: "json" })) as
+    | { client_id: string; client_secret?: string }
+    | null;
+
+  if (!app?.client_id) {
+    return new Response("App not found (re-register app)", { status: 500 });
+  }
+
+  // 3) 토큰 교환 (PKCE: code_verifier 포함!)
+  const redirectUri = `${new URL(request.url).origin}/api/auth/callback`; // start.ts와 동일해야 함
+
+  const tokenRes = await fetch(`https://${iss}/oauth/token`, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      "accept": "application/json",
+    },
     body: new URLSearchParams({
-      grant_type: "authorization_code",
       client_id: app.client_id,
-      client_secret: app.client_secret,
-      redirect_uri: `${u.origin}/api/auth/callback`,
+      // Mastodon는 public client(PKCE)라도 client_secret을 받아주는 인스턴스가 많음 — 있으면 넣어줌
+      ...(app.client_secret ? { client_secret: app.client_secret } : {}),
+      grant_type: "authorization_code",
       code,
+      redirect_uri: redirectUri,
       code_verifier: verifier,
     }),
   });
-  if (!tok.ok) return new Response(`Token exchange failed: ${tok.status}`, { status: 401 });
 
-  const tokenJson = await tok.json();                 // unknown
-  const token = tokenJson as unknown as MastodonToken; // ← 명시 캐스팅
-
-
-  if (!isMastoToken(token)) {
-    return new Response("Token shape invalid", { status: 502 });
+  if (!tokenRes.ok) {
+    const body = await tokenRes.text().catch(() => "");
+    // 400이면 보통 invalid_grant(= code_verifier/redirect_uri 문제) 메시지가 담겨있음
+    return new Response(`Token exchange failed: ${tokenRes.status}\n${body}`, { status: 502 });
   }
 
-  const meRes = await fetch(`https://${iss}/api/v1/accounts/verify_credentials`, {
-    headers: { authorization: `Bearer ${token.access_token}` },
-  });
-  if (!meRes.ok) return new Response(`Verify failed: ${meRes.status}`, { status: 401 });
-  // ⬇️ 추가: 마스토돈 계정 타입
-  type MastoAccount = {
-    id: string;
-    username: string;
-    acct: string;
-    display_name?: string;
-    avatar?: string;
-    url?: string;
+  const tok = await tokenRes.json() as {
+    access_token: string;
+    token_type?: string;
+    scope?: string;
+    created_at?: number;
+    expires_in?: number;
   };
 
-  // ⬇️ 교체: unknown → 명시 캐스팅
-  const me = (await meRes.json()) as MastoAccount;
+  // 4) 세션 쿠키 설정
+  const maxAge = tok.expires_in ?? 60 * 60 * 24 * 30; // 30일 기본
+  const headers = new Headers({ Location: "/" });
+  headers.append(
+    "Set-Cookie",
+    `ap_token=${tok.access_token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`
+  );
+  headers.append(
+    "Set-Cookie",
+    `ap_inst=${iss}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`
+  );
 
-  const base = "Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400";
-  const h = new Headers({ location: "/app.html" });
-  h.append("set-cookie", `ap_token=${encodeURIComponent(token.access_token)}; ${base}`);
-  h.append("set-cookie", `ap_inst=${encodeURIComponent(iss)}; ${base}`);
-  h.append("set-cookie", `ap_acct=${encodeURIComponent(me.acct ?? "")}; ${base}`);
+  // state는 1회용 — 굳이 삭제 안 해도 TTL로 만료되지만, 깔끔하게 제거해도 됨
+  // await env.FEDIOAUTH_KV.delete(`state:${state}`);
 
-  return new Response(null, { status: 302, headers: h });
+  return new Response(null, { status: 302, headers });
 };
