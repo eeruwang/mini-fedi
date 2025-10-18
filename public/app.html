@@ -353,6 +353,78 @@ function escapeHTML(s='') {
 }
 
 /* =========================
+   Auto refresh (polling)
+   ========================= */
+let lastTopId = null;
+let refreshTimer = null;
+
+function getIdFromPost(item) {
+  // Masto/부스트 모두 대응
+  return item?.reblog?.id ?? item?.id ?? null;
+}
+
+function startPolling() {
+  if (refreshTimer) return;
+  refreshTimer = setInterval(checkForUpdates, 30000); // 30s
+}
+
+function stopPolling() {
+  if (!refreshTimer) return;
+  clearInterval(refreshTimer);
+  refreshTimer = null;
+}
+
+async function checkForUpdates() {
+  try {
+    // 홈일 때만 체크(원하면 조건 제거)
+    if (!source || mode !== 'home') return;
+
+    const url = source === 'masto' ? '/api/home?merge=0' : '/api/mk/home';
+    const data = await jfetch(url);
+    const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+    if (!items.length) return;
+
+    const newTopId = getIdFromPost(items[0]);
+    if (newTopId && lastTopId && newTopId !== lastTopId) {
+      showNewPostBanner();
+    }
+  } catch (e) {
+    console.warn('Update check failed', e);
+  }
+}
+
+function showNewPostBanner() {
+  if (document.getElementById('new-post-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'new-post-banner';
+  banner.textContent = '새 글이 올라왔습니다 — 새로고침';
+  banner.style.cssText = `
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    background: var(--card); color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 999px; padding: 8px 16px;
+    font-size: 13px; box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    cursor: pointer; z-index: 1000; animation: fadeIn .25s ease;
+  `;
+  banner.addEventListener('click', async () => {
+    banner.remove();
+    // 완전 새로 채우기
+    feedEl.innerHTML = '';
+    cursor = null;
+    await loadPage(true);
+    await autofillIfNeeded();
+  });
+  document.body.appendChild(banner);
+}
+
+// 탭이 백그라운드로 가면 폴링 잠깐 멈추기(낭비 방지)
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopPolling();
+  else if (mode === 'home') startPolling();
+});
+
+
+/* =========================
    Media rendering (Masto/Misskey)
    ========================= */
 function renderMedia(post) {
@@ -665,6 +737,12 @@ async function loadPage(initial=false) {
     }
 
     const data = await jfetch(u.toString());
+    // 홈이면 최신글 id 기억(초기 진입/리로드 모두 반영)
+    if (mode === 'home') {
+      const top = Array.isArray(data?.items) ? data.items[0] : Array.isArray(data) ? data[0] : null;
+      lastTopId = top ? (top?.reblog?.id ?? top?.id ?? null) : lastTopId;
+    }
+
 
     // ⬅️ 원본 목록을 따로 보관 (커서 계산은 이걸로!)
     const rawItems = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
@@ -732,11 +810,22 @@ async function autofillIfNeeded(maxLoops = 3) {
    UI bindings
    ========================= */
 document.getElementById('tab-home').addEventListener('click', async () => {
-  mode = 'home'; cursor = null; feedEl.innerHTML = ''; await loadPage(true); await autofillIfNeeded();
+  mode = 'home';
+  cursor = null;
+  feedEl.innerHTML = '';
+  await loadPage(true);
+  await autofillIfNeeded();
+  startPolling(); // 홈 들어오면 폴링 시작
 });
+
 document.getElementById('tab-fav').addEventListener('click', async () => {
-  mode = 'fav'; cursor = null; feedEl.innerHTML = ''; await loadPage(true); await autofillIfNeeded();
+  mode = 'fav';
+  stopPolling(); // 홈 아님 → 폴링 정지
+  cursor = null; feedEl.innerHTML = '';
+  await loadPage(true); await autofillIfNeeded();
 });
+
+
 document.getElementById('logout').addEventListener('click', async () => {
   try {
     if (source === 'masto') await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
@@ -750,11 +839,13 @@ document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest?.('#acct-btn');
   if (!btn) return;
   mode = 'mine';
+  stopPolling(); // 홈 아님 → 폴링 정지
   cursor = null;
   feedEl.innerHTML = '';
   await loadPage(true);
   await autofillIfNeeded();
 });
+
 
 // 💬 댓글 토글 (Mastodon 전용)
 const threadCache = new Map(); // id -> HTML string (캐시)
@@ -897,6 +988,7 @@ document.addEventListener('click', async (ev) => {
   }
 });
 
+
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
 // infinite scroll (disconnect 지원)
@@ -912,7 +1004,11 @@ io.observe(document.getElementById('sentinel'));
   await loadMe();
   await loadPage(true);
   await autofillIfNeeded();
+
+  // 첫 진입이 홈이면 폴링 시작
+  if (mode === 'home') startPolling();
 })();
+
 </script>
 </body>
 </html>
