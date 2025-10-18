@@ -244,6 +244,38 @@
       transition: height .28s ease;
     }
 
+    .likers {
+      overflow: hidden;
+      margin-top: 8px;
+      border-top: 1px dashed var(--border);
+      padding-top: 8px;
+      animation: fadeIn .18s ease;
+    }
+
+    .likers-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 8px;
+    }
+
+    .liker-chip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      background: color-mix(in oklab, var(--card) 96%, transparent);
+      border-radius: var(--radius-sm);
+      padding: 6px 8px;
+    }
+
+    .liker-chip img {
+      width: 28px; height: 28px; border-radius: 999px; object-fit: cover; background: #222;
+    }
+
+    .liker-chip .txt { line-height: 1.2; }
+    .liker-chip .txt .meta { display:block; font-size: 12px; opacity:.7; }
+
+
 
   </style>
 </head>
@@ -290,6 +322,74 @@ async function jfetch(url, opts = {}) {
   const ct = r.headers.get('content-type') || '';
   return ct.includes('application/json') ? r.json() : r.text();
 }
+// ⭐ 누르면 "좋아요한 사람" 목록을 아래로 펼치기 (내 글 전용)
+const likersCache = new Map(); // id -> HTML
+
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('.likers-toggle');
+  if (!btn) return;
+
+  const id = btn.dataset.id;
+  if (!id) return;
+
+  // 이 카드의 likers 컨테이너 찾기
+  const article = btn.closest('article');
+  let box = article?.querySelector(`.likers[data-for="${CSS.escape(id)}"]`);
+  if (!box) return;
+
+  // 토글: 열려있으면 닫기
+  if (!box.hasAttribute('hidden')) {
+    box.setAttribute('hidden', '');
+    btn.title = 'Show who liked';
+    return;
+  }
+
+  // 캐시가 있으면 즉시 표시
+  if (likersCache.has(id)) {
+    box.innerHTML = likersCache.get(id);
+    box.removeAttribute('hidden');
+    btn.title = 'Hide likers';
+    return;
+  }
+
+  // 로딩 표시
+  box.innerHTML = `<div class="meta">불러오는 중…</div>`;
+  box.removeAttribute('hidden');
+  btn.title = 'Hide likers';
+
+  try {
+    const users = await jfetch(`/api/status/favourited_by?id=${encodeURIComponent(id)}`);
+    const list = Array.isArray(users) ? users : [];
+
+    if (!list.length) {
+      box.innerHTML = `<div class="meta">아직 좋아요가 없습니다.</div>`;
+      likersCache.set(id, box.innerHTML);
+      return;
+    }
+
+    // 사용자 칩 렌더
+    const chips = list.map(u => {
+      const name = (u.display_name || u.username || '').toString();
+      const handle = u.acct ? `@${u.acct}` : '';
+      const ava = u.avatar_static || u.avatar || '';
+      return `
+        <div class="liker-chip">
+          <img src="${ava}" alt="" loading="lazy" />
+          <div class="txt">
+            <strong>${escapeHTML(name)}</strong>
+            <span class="meta">${escapeHTML(handle)}</span>
+          </div>
+        </div>`;
+    }).join('');
+
+    box.innerHTML = `<div class="likers-list">${chips}</div>`;
+    likersCache.set(id, box.innerHTML);
+
+  } catch (e) {
+    console.error('likers fetch error', e);
+    box.innerHTML = `<div class="meta">목록을 불러오지 못했습니다.</div>`;
+  }
+});
 
 /* =========================
    Theme toggle
@@ -539,6 +639,8 @@ async function renderPostHTML(post, opts) {
     const base = isReblog ? post.reblog : post;   // 원글
     const booster = isReblog ? post.account : null;
 
+    const isMine = !!myMastoId && base?.account?.id === myMastoId;
+
     const acc = base?.account || {};
     const displayName = acc.display_name || acc.username || '';
     const handle = acc.acct ? `@${acc.acct}` : '';
@@ -582,13 +684,18 @@ async function renderPostHTML(post, opts) {
     reactionsHTML += `
       <button class="badge reply-toggle" data-id="${likeTargetId}" title="Show replies">💬 ${replies}</button>
       <span class="badge">♺ ${boosts}</span>
-      <button class="badge like-btn" data-id="${likeTargetId}" title="Like">⭐ ${faves}</button>
+      <button class="badge ${isMine ? 'likers-toggle' : 'like-btn'}"
+              data-id="${likeTargetId}"
+              title="${isMine ? 'Show who liked' : 'Like'}">⭐ ${faves}</button>
     `;
+
 
     const debugOn = new URL(location.href).searchParams.get('debug') === '1';
     const debugHTML = (debugOn && base?._mkDebug)
       ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(base._mkDebug, null, 2))}</pre>`
       : '';
+
+    const likersBlock = `<div class="likers" data-for="${likeTargetId}" hidden></div>`;
 
     // ✨ 리블로그 형태
     if (isReblog) {
@@ -637,6 +744,7 @@ async function renderPostHTML(post, opts) {
         <div class="content">${contentHTML}</div>
         ${mediaHTML}
         <div class="reactions">${reactionsHTML}</div>
+        ${likersBlock}
         ${debugHTML}
         <div class="thread" data-for="${likeTargetId}" hidden></div>
       </article>
