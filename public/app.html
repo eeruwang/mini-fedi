@@ -64,6 +64,36 @@
     .like-btn:hover {
       background: var(--btn-bg-hover);
     }
+    /* ── Reblog/Boost 스타일 ───────────────────────────── */
+    .post.reblog { padding: 8px 16px 14px; }
+    .reblog-banner {
+      display:flex; align-items:center; gap:8px;
+      font-size:12px; opacity:.75; margin: 4px 0 8px;
+    }
+    .reblog-banner .icon { transform: rotate(0.0turn); } /* 필요하면 회전값 조절 */
+
+    .reblog-inner {
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 10px;
+      padding: 12px;
+      position: relative;
+    }
+    .reblog-inner::before {
+      content: ""; position: absolute; left: 0; top: 10px; bottom: 10px;
+      width: 3px; border-radius: 3px;
+      background: var(--border); /* 색감은 변수 사용 */
+    }
+    .reblog-inner .post-head { margin-bottom: 4px; }
+    .reblog-inner .name { font-weight: 700; }
+    .reblog-inner .content { margin-top: 6px; }
+
+    /* 배너의 유저칩(선택) */
+    .user-chip { display:inline-flex; align-items:center; gap:6px; }
+    .user-chip .avatar-mini{
+      width:16px; height:16px; border-radius:999px; object-fit:cover; background:#222;
+    }
+
   </style>
 </head>
 <body>
@@ -220,23 +250,29 @@ async function renderPostHTML(post, opts) {
   const { source } = opts; // 'masto' | 'misskey'
 
   if (source === 'masto') {
-    const acc = post?.account || {};
+    const isReblog = !!post?.reblog;
+    const base = isReblog ? post.reblog : post;   // 원글
+    const booster = isReblog ? post.account : null;
+
+    const acc = base?.account || {};
     const displayName = acc.display_name || acc.username || '';
     const handle = acc.acct ? `@${acc.acct}` : '';
-    const createdAt = post?.created_at || '';
+    const createdAt = base?.created_at || '';
     const avatarURL = acc.avatar_static || acc.avatar || '';
-    const mastoEmojiMap = buildMastoEmojiMap(post);
-    const contentHTML = renderEmojisToHTML(post?.content || '', mastoEmojiMap);
-    const mediaHTML = renderMedia(post);
-    const faves = post?.favourites_count ?? 0;
-    const boosts = post?.reblogs_count ?? 0;
-    const replies = post?.replies_count ?? 0;
 
-    // Misskey 이모지 해상: 필요할 때만 호출 (url 없는 항목이 있을 때)
+    const mastoEmojiMap = buildMastoEmojiMap(base);
+    const contentHTML = renderEmojisToHTML(base?.content || '', mastoEmojiMap);
+    const mediaHTML = renderMedia(base);
+
+    const faves = base?.favourites_count ?? 0;
+    const boosts = base?.reblogs_count ?? 0;
+    const replies = base?.replies_count ?? 0;
+
+    // Misskey 리액션 보강(있으면)
     let mkEmojiList = [];
-    const needMkEmoji = Array.isArray(post?._mkReactions) && post._mkReactions.some(r => !r.url);
+    const needMkEmoji = Array.isArray(base?._mkReactions) && base._mkReactions.some(r => !r.url);
     if (needMkEmoji) {
-      const mkReHost = post?._mkHost || post?._mkDebug?.host || null;
+      const mkReHost = base?._mkHost || base?._mkDebug?.host || null;
       mkEmojiList = mkReHost ? await getMisskeyEmojis(mkReHost) : [];
     }
     const resolveMkUrl = (name) => {
@@ -245,38 +281,64 @@ async function renderPostHTML(post, opts) {
     };
 
     let reactionsHTML = '';
-    if (Array.isArray(post?._mkReactions)) {
-      const mkBadges = post._mkReactions.map(r => {
+    if (Array.isArray(base?._mkReactions)) {
+      const mkBadges = base._mkReactions.map(r => {
         const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : '';
         const url = r.url || (r.name && resolveMkUrl(r.name));
-        if (!url && r.char) {
-          // 유니코드 별칭 이모지 (❤️, 😺 등)
-          return `<span class="badge">${r.char} ${cnt}</span>`;
-        }
-        if (url) {
-          // 커스텀 이모지 이미지
-          return `<span class="badge"><img src="${url}" alt=":${r.name || ''}:" />${cnt}</span>`;
-        }
-        // URL도 char도 없을 때 폴백 (텍스트로)
+        if (!url && r.char) return `<span class="badge">${r.char} ${cnt}</span>`;
+        if (url) return `<span class="badge"><img src="${url}" alt=":${r.name || ''}:" />${cnt}</span>`;
         return `<span class="badge">${r.name ?? ''} ${cnt}</span>`;
       }).join('');
       reactionsHTML += mkBadges;
     }
 
-    // 이 아래줄은 그대로 유지
-    const likeTargetId = (post?.reblog?.id) ? post.reblog.id : post.id;
+    // 🔘 Like 버튼(원글 ID 사용)
+    const likeTargetId = base?.id || post?.id;
     reactionsHTML += `
       <span class="badge">💬 ${replies}</span>
       <span class="badge">♺ ${boosts}</span>
       <button class="badge like-btn" data-id="${likeTargetId}" title="Like">⭐ ${faves}</button>
     `;
 
-
     const debugOn = new URL(location.href).searchParams.get('debug') === '1';
-    const debugHTML = (debugOn && post?._mkDebug)
-      ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(post._mkDebug, null, 2))}</pre>`
+    const debugHTML = (debugOn && base?._mkDebug)
+      ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(base._mkDebug, null, 2))}</pre>`
       : '';
 
+    // ✨ 리블로그 형태
+    if (isReblog) {
+      const boosterName = booster?.display_name || booster?.username || '';
+      const boosterHandle = booster?.acct ? `@${booster.acct}` : '';
+      const boosterAvatar = booster?.avatar_static || booster?.avatar || '';
+
+      return `
+        <article class="post reblog">
+          <div class="reblog-banner">
+            <span class="icon">↻</span>
+            <span class="user-chip">
+              <img class="avatar-mini" src="${boosterAvatar}" alt="" loading="lazy">
+              <strong>${escapeHTML(boosterName)}</strong> <span class="meta">${escapeHTML(boosterHandle)}</span>
+            </span>
+            <span class="meta">님이 부스트했습니다</span>
+          </div>
+          <div class="reblog-inner">
+            <div class="post-head">
+              <img class="avatar" src="${avatarURL}" alt="" loading="lazy">
+              <div>
+                <div class="name">${renderEmojisToHTML(displayName, mastoEmojiMap)} <span class="meta">${handle}</span></div>
+                <div class="meta">${new Date(createdAt).toLocaleString()}</div>
+              </div>
+            </div>
+            <div class="content">${contentHTML}</div>
+            ${mediaHTML}
+            <div class="reactions">${reactionsHTML}</div>
+            ${debugHTML}
+          </div>
+        </article>
+      `;
+    }
+
+    // ✨ 일반 카드(리블로그 아님)
     return `
       <article class="post">
         <div class="post-head">
@@ -293,6 +355,7 @@ async function renderPostHTML(post, opts) {
       </article>
     `;
   }
+
 
   if (source === 'misskey') {
     const u = post?.user || {};
