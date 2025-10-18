@@ -107,6 +107,16 @@
       border-radius: 999px;
       object-fit: cover;
       background: #222;
+    .thread {
+      margin-top: 8px;
+      padding-left: 14px;
+      border-left: 2px solid var(--border);
+      animation: fadeIn .18s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+    .thread .post { background: none; border-bottom: 1px dashed var(--border); padding-left: 0; }
+    .thread .post:last-child { border-bottom: 0; }
+
     }
   </style>
 </head>
@@ -313,7 +323,7 @@ async function renderPostHTML(post, opts) {
     // 🔘 Like 버튼(원글 ID 사용)
     const likeTargetId = base?.id || post?.id;
     reactionsHTML += `
-      <span class="badge">💬 ${replies}</span>
+      <button class="badge reply-toggle" data-id="${likeTargetId}" title="Show replies">💬 ${replies}</button>
       <span class="badge">♺ ${boosts}</span>
       <button class="badge like-btn" data-id="${likeTargetId}" title="Like">⭐ ${faves}</button>
     `;
@@ -352,6 +362,7 @@ async function renderPostHTML(post, opts) {
             <div class="reactions">${reactionsHTML}</div>
             ${debugHTML}
           </div>
+          <div class="thread" data-for="${likeTargetId}" hidden></div>
         </article>
       `;
     }
@@ -370,6 +381,7 @@ async function renderPostHTML(post, opts) {
         ${mediaHTML}
         <div class="reactions">${reactionsHTML}</div>
         ${debugHTML}
+        <div class="thread" data-for="${likeTargetId}" hidden></div>
       </article>
     `;
   }
@@ -634,6 +646,84 @@ document.addEventListener('click', async (ev) => {
   await autofillIfNeeded();
 });
 
+// 💬 댓글 토글 (Mastodon 전용)
+const threadCache = new Map(); // id -> HTML string (캐시)
+
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('.reply-toggle');
+  if (!btn) return;
+
+  // 소스가 Misskey면 아직 미구현
+  if (source !== 'masto') {
+    alert('Misskey 대화 보기는 준비 중이에요!');
+    return;
+  }
+
+  const id = btn.dataset.id;
+  if (!id) return;
+
+  // 이 글 카드 아래의 thread 컨테이너 찾기
+  // (가장 가까운 article 다음 형제로 thread가 있습니다)
+  const article = btn.closest('article');
+  let threadEl = article?.querySelector(`.thread[data-for="${CSS.escape(id)}"]`);
+  if (!threadEl) {
+    // 혹시 못 찾으면 전체에서 탐색
+    threadEl = document.querySelector(`.thread[data-for="${CSS.escape(id)}"]`);
+  }
+  if (!threadEl) return;
+
+  // 토글: 펼쳐져 있으면 접기
+  if (!threadEl.hasAttribute('hidden')) {
+    threadEl.setAttribute('hidden', '');
+    btn.title = 'Show replies';
+    return;
+  }
+
+  // 펼치기: 캐시 있으면 즉시 사용
+  if (threadCache.has(id)) {
+    threadEl.innerHTML = threadCache.get(id);
+    threadEl.removeAttribute('hidden');
+    btn.title = 'Hide replies';
+    return;
+  }
+
+  // 로딩 표시
+  threadEl.innerHTML = `<div class="meta">불러오는 중…</div>`;
+  threadEl.removeAttribute('hidden');
+
+  try {
+    // 백엔드 프록시로 컨텍스트 요청
+    const data = await jfetch(`/api/status/context?id=${encodeURIComponent(id)}`);
+    const desc = Array.isArray(data?.descendants) ? data.descendants : [];
+    if (!desc.length) {
+      threadEl.innerHTML = `<div class="meta">대화가 없습니다.</div>`;
+      threadCache.set(id, threadEl.innerHTML);
+      btn.title = 'Hide replies';
+      return;
+    }
+
+    // 후손들을 시간순으로 정렬(원한다면)
+    desc.sort((a,b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+    // 각 댓글을 기존 렌더러로 렌더
+    const parts = [];
+    for (const st of desc) {
+      try {
+        const html = await renderPostHTML(st, { source: 'masto' });
+        parts.push(html);
+      } catch {
+        // 실패한 건 건너뜀
+      }
+    }
+    const htmlAll = parts.join('');
+    threadEl.innerHTML = htmlAll || `<div class="meta">표시할 대화가 없습니다.</div>`;
+    threadCache.set(id, threadEl.innerHTML);
+    btn.title = 'Hide replies';
+  } catch (e) {
+    console.error('context fetch error', e);
+    threadEl.innerHTML = `<div class="meta">대화를 불러오지 못했습니다.</div>`;
+  }
+});
 
 // 좋아요(⭐) 버튼 클릭
 document.addEventListener('click', async (ev) => {
