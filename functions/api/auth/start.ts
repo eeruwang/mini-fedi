@@ -1,21 +1,26 @@
 // functions/api/auth/start.ts
 import type { PagesFunction, KVNamespace } from "@cloudflare/workers-types";
 
-async function sha256(buf: ArrayBuffer) {
-  const hash = await crypto.subtle.digest('SHA-256', buf)
-  return new Uint8Array(hash)
+// ✅ BufferSource 를 받도록
+async function sha256(data: BufferSource) {
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return new Uint8Array(hash);
 }
+
 function b64u(bytes: Uint8Array) {
-  let s = btoa(String.fromCharCode(...bytes))
-  return s.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+  const s = btoa(String.fromCharCode(...bytes));
+  return s.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
+
 async function pkcePair() {
-  const vBytes = crypto.getRandomValues(new Uint8Array(32))
-  const verifier = b64u(vBytes)
-  const enc = new TextEncoder().encode(verifier)
-  const challenge = b64u(await sha256(enc.buffer))
-  return { verifier, challenge }
+  const vBytes = crypto.getRandomValues(new Uint8Array(32));
+  const verifier = b64u(vBytes);
+  const enc = new TextEncoder().encode(verifier);
+  // ✅ .buffer 말고 enc 자체(= Uint8Array)도 BufferSource 이므로 그대로 전달해도 됨
+  const challenge = b64u(await sha256(enc));
+  return { verifier, challenge };
 }
+
 function validHost(h: string) { return /^[a-z0-9.-]+$/.test(h) }
 
 export const onRequestGet: PagesFunction<{ FEDIOAUTH_KV: KVNamespace }> = async ({ request, env }) => {
