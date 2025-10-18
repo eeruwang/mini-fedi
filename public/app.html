@@ -552,6 +552,7 @@ document.getElementById('logout').addEventListener('click', async () => {
   }
 });
 // 좋아요(⭐) 버튼 클릭
+// 좋아요(⭐) 버튼 클릭
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('.like-btn');
   if (!btn) return;
@@ -559,7 +560,8 @@ document.addEventListener('click', async (ev) => {
   const id = btn.dataset.id;
   if (!id) { console.error('like: missing data-id'); return; }
 
-  const orig = btn.textContent;
+  const orig = btn.textContent || '⭐ 0';
+
   btn.disabled = true;
   btn.textContent = '⭐…';
   try {
@@ -569,30 +571,48 @@ document.addEventListener('click', async (ev) => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    const text = await res.text().catch(()=>'');
+
+    // 응답 본문(JSON 우선)
+    let payload = null;
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      payload = await res.json().catch(() => null);
+    } else {
+      // 실패시 디버깅용 텍스트도 확보
+      payload = await res.text().catch(() => '');
+    }
 
     if (!res.ok) {
-      console.error('like failed', res.status, text);
+      console.error('like failed', res.status, payload);
       btn.textContent = '⭐!';
-      // 401이면 마스토돈 세션 만료/없음
-      if (res.status === 401) btn.title = 'Mastodon 로그인 필요(세션 만료)';
-      else btn.title = `Like failed: ${res.status}`;
+      btn.title = res.status === 401 ? 'Mastodon 로그인 필요(세션 만료)' : `Like failed: ${res.status}`;
       return;
     }
 
-    // 성공
-    btn.textContent = '⭐ +1';
+    // ✅ 성공: 표시 숫자 결정
+    // 서버가 favourites_count를 주면 그 값 사용, 없으면 현재에서 +1
+    let newCount;
+    if (payload && typeof payload.favourites_count === 'number') {
+      newCount = payload.favourites_count;
+    } else {
+      const m = (orig.match(/^⭐\s*(\d+)/));
+      const cur = m ? parseInt(m[1], 10) : 0;
+      newCount = cur + 1;
+    }
+
+    btn.textContent = `⭐ ${newCount}`;
     btn.title = 'Liked!';
     btn.style.background = 'var(--btn-bg-hover)';
+
   } catch (e) {
     console.error('like error', e);
     btn.textContent = '⭐×';
     btn.title = 'Network error';
   } finally {
-    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 1200);
+    // ⛔ 원래 텍스트로 되돌리지 않음
+    btn.disabled = false;
   }
 });
-
 
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
