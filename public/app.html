@@ -467,9 +467,13 @@ async function loadPage(initial=false) {
   isLoading = true;
 
   try {
-    const path = mode === 'fav'
-      ? (source === 'masto' ? '/api/favourites' : '/api/mk/home?favourites=1')
-      : (source === 'masto' ? '/api/home' : '/api/mk/home');
+    const path =
+      mode === 'fav'
+        ? (source === 'masto' ? '/api/favourites' : '/api/mk/home?favourites=1')
+        : mode === 'mine'
+          ? (source === 'masto' ? '/api/mine' : '/api/mk/mine')
+          : (source === 'masto' ? '/api/home' : '/api/mk/home');
+
 
     const u = new URL(path, location.origin);
     if (cursor) {
@@ -485,20 +489,6 @@ async function loadPage(initial=false) {
     // ⬅️ 원본 목록을 따로 보관 (커서 계산은 이걸로!)
     const rawItems = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
     let items = rawItems;
-
-    // ✅ “Mine” 모드: 내 글만 필터링
-    if (mode === 'mine') {
-      if (source === 'masto' && myMastoId) {
-        items = rawItems.filter(p => {
-          const base = p?.reblog ? p.reblog : p;
-          return base?.account?.id === myMastoId;
-        });
-      } else if (source === 'misskey' && myMkId) {
-        items = rawItems.filter(p => p?.user?.id === myMkId);
-      } else {
-        items = [];
-      }
-    }
 
     // 점진 렌더: 자리 먼저 만들고, 준비되는 대로 교체
     const frag = document.createDocumentFragment();
