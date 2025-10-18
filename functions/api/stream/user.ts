@@ -35,8 +35,9 @@ export const onRequestGet: PagesFunction = async ({ request }) => {
   streamingBase = streamingBase.replace(/^wss:\/\//i, "https://");
 
   // 3) user 스트림 URL 구성 (access_token 쿼리로 전달)
-  const target = new URL("/api/v1/streaming", streamingBase);
+  const target = new URL(streamingBase.includes('/api') ? streamingBase : `${streamingBase}/api/v1/streaming`);
   target.searchParams.set("stream", "user");
+
   target.searchParams.set("access_token", token);
 
   // 4) 업스트림 SSE를 그대로 파이프로 전달
