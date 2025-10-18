@@ -853,6 +853,81 @@ async function autofillIfNeeded(maxLoops = 3) {
 }
 
 /* =========================
+   Realtime streaming (SSE)
+   ========================= */
+let es = null;                 // EventSource 핸들
+const seenIds = new Set();     // 중복 방지용 (id 캐시, 필요 시 크기 제한)
+
+function postKey(item) {
+  return item?.reblog?.id ?? item?.id ?? null;
+}
+
+// 새 글을 DOM 맨 위에 삽입
+async function prependStatus(st) {
+  const key = postKey(st);
+  if (!key) return;
+  if (seenIds.has(key)) return;       // 중복 방지
+  seenIds.add(key);
+  // 너무 커지지 않게 관리
+  if (seenIds.size > 5000) {
+    // 대충 정리
+    for (const k of seenIds.values()) { seenIds.delete(k); if (seenIds.size <= 2500) break; }
+  }
+
+  const html = await renderPostHTML(st, { source: 'masto' });
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  const node = wrap.firstElementChild;
+  if (!node) return;
+
+  // thread 컨테이너까지 포함되어 있으므로 그냥 통째로
+  const first = feedEl.firstElementChild;
+  if (first) feedEl.insertBefore(node, first);
+  else feedEl.appendChild(node);
+}
+
+function startStream() {
+  if (es || source !== 'masto') return;
+  es = new EventSource('/api/stream/user', { withCredentials: true });
+
+  es.addEventListener('open', () => {
+    // console.debug('SSE open');
+  });
+  es.addEventListener('error', (e) => {
+    // console.warn('SSE error', e);
+    // 에러가 나면 브라우저가 자동 재연결 시도함
+  });
+
+  // Mastodon SSE 이벤트: update/delete/notification/filters_changed ...
+  es.addEventListener('update', async (evt) => {
+    if (mode !== 'home') return; // 홈에서만 실시간 반영
+    try {
+      const st = JSON.parse(evt.data);
+      await prependStatus(st);
+
+      // 홈 최신 id 갱신 (자동 새로고침 로직과도 호환)
+      lastTopId = postKey(st) || lastTopId;
+    } catch {}
+  });
+
+  // 삭제 이벤트가 오면 DOM에서 지우기(선택)
+  es.addEventListener('delete', (evt) => {
+    const id = evt.data?.trim();
+    if (!id) return;
+    seenIds.delete(id);
+    const article = feedEl.querySelector(`.post .like-btn[data-id="${CSS.escape(id)}"]`)?.closest('article');
+    if (article) article.remove();
+  });
+}
+
+function stopStream() {
+  if (!es) return;
+  try { es.close(); } catch {}
+  es = null;
+}
+
+
+/* =========================
    UI bindings
    ========================= */
 document.getElementById('tab-home').addEventListener('click', async () => {
@@ -861,14 +936,26 @@ document.getElementById('tab-home').addEventListener('click', async () => {
   feedEl.innerHTML = '';
   await loadPage(true);
   await autofillIfNeeded();
-  startPolling(); // 홈 들어오면 폴링 시작
+  startStream();     // ⬅️ 홈 진입 시 스트리밍 시작
 });
 
 document.getElementById('tab-fav').addEventListener('click', async () => {
   mode = 'fav';
-  stopPolling(); // 홈 아님 → 폴링 정지
+  stopStream();      // ⬅️ 홈 이탈 시 정지
   cursor = null; feedEl.innerHTML = '';
   await loadPage(true); await autofillIfNeeded();
+});
+
+// 이름(계정 칩) 클릭 → 내 글
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest?.('#acct-btn');
+  if (!btn) return;
+  mode = 'mine';
+  stopStream();      // ⬅️ 홈 이탈 시 정지
+  cursor = null;
+  feedEl.innerHTML = '';
+  await loadPage(true);
+  await autofillIfNeeded();
 });
 
 
@@ -880,18 +967,6 @@ document.getElementById('logout').addEventListener('click', async () => {
     location.href = '/';
   }
 });
-// 이름(계정 칩) 클릭 시 "내 글" 피드로
-document.addEventListener('click', async (ev) => {
-  const btn = ev.target.closest?.('#acct-btn');
-  if (!btn) return;
-  mode = 'mine';
-  stopPolling(); // 홈 아님 → 폴링 정지
-  cursor = null;
-  feedEl.innerHTML = '';
-  await loadPage(true);
-  await autofillIfNeeded();
-});
-
 
 // 💬 댓글 토글 (Mastodon 전용)
 const threadCache = new Map(); // id -> HTML string (캐시)
@@ -1052,7 +1127,7 @@ io.observe(document.getElementById('sentinel'));
   await autofillIfNeeded();
 
   // 첫 진입이 홈이면 폴링 시작
-  if (mode === 'home') startPolling();
+  if (mode === 'home' && source === 'masto') startStream(); // ⬅️
 })();
 
 </script>
