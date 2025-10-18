@@ -102,6 +102,7 @@
     <div class="row" style="gap:6px;">
       <button id="tab-home" class="btn">Home</button>
       <button id="tab-fav" class="btn">Favourites</button>
+      <button id="tab-mine" class="btn">Me</button>
     </div>
     <div style="flex:1"></div>
     <div class="row">
@@ -404,6 +405,9 @@ async function renderPostHTML(post, opts) {
    Timeline state & loaders
    ========================= */
 const feedEl = document.getElementById('feed');
+let myMastoId = null;   // Mastodon 내 계정 ID
+let myMkId = null;      // Misskey  내 계정 ID
+let myAcct = null;      // Mastodon @acct (디버그용)
 let mode = 'home'; // 'home' | 'fav'
 let isLoading = false;
 let cursor = null; // Masto: max_id, Misskey: untilId
@@ -426,6 +430,8 @@ async function loadMe() {
     source = 'masto';
     activeHost = getCookie('ap_inst') || '';
     document.getElementById('acct').textContent = me?.acct ? `@${me.acct}` : me?.username || 'Mastodon';
+    myMastoId = me?.id || null;
+    myAcct = me?.acct || null;
     return 'masto';
   };
   const tryMisskey = async () => {
@@ -433,6 +439,7 @@ async function loadMe() {
     source = 'misskey';
     activeHost = getCookie('mk_host') || '';
     document.getElementById('acct').textContent = me?.username ? `@${me.username}` : 'Misskey';
+    myMkId = me?.id || null;
     return 'misskey';
   };
 
@@ -474,7 +481,23 @@ async function loadPage(initial=false) {
     }
 
     const data = await jfetch(u.toString());
-    const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+    let items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+
+    // ✅ “Mine” 모드: 내 글만 필터링
+    if (mode === 'mine') {
+      if (source === 'masto' && myMastoId) {
+        items = items.filter(p => {
+          const base = p?.reblog ? p.reblog : p;
+          return base?.account?.id === myMastoId;
+        });
+      } else if (source === 'misskey' && myMkId) {
+        items = items.filter(p => p?.user?.id === myMkId);
+      } else {
+        // ID를 아직 못 받았으면 일단 비움
+        items = [];
+      }
+    }
+
 
     // 점진 렌더: 자리 먼저 만들고, 준비되는 대로 교체
     const frag = document.createDocumentFragment();
@@ -542,6 +565,10 @@ document.getElementById('tab-home').addEventListener('click', async () => {
 });
 document.getElementById('tab-fav').addEventListener('click', async () => {
   mode = 'fav'; cursor = null; feedEl.innerHTML = ''; await loadPage(true); await autofillIfNeeded();
+});
+document.getElementById('tab-mine').addEventListener('click', async () => {
+  mode = 'mine'; cursor = null; feedEl.innerHTML = '';
+  await loadPage(true); await autofillIfNeeded();
 });
 document.getElementById('logout').addEventListener('click', async () => {
   try {

@@ -88,6 +88,14 @@ function resolveAliasFromMeta(meta: any, key: string) {
   return { kind: "unicode" as const, char: s };
 }
 
+// 원격 호스트의 이모지 URL 조회: meta를 가져와 name 매칭
+async function getEmojiUrlFromHost(env: Env, host: string, name: string): Promise<string | null> {
+  const m = await getMisskeyMeta(env, host).catch(() => null);
+  if (!m) return null;
+  return resolveEmojiUrlFromMeta(m, name);
+}
+
+
 async function getMisskeyMeta(env: Env, host: string) {
   if (metaMem.has(host)) return metaMem.get(host);
   const kvKey = `mkmeta:${host}`;
@@ -340,28 +348,39 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
 
               let kindInfo = parseMkReactionKey(k);
 
-              // 콜론이 없는 키(우리 로직상 'unicode')일 때 → meta 별칭 해석 시도
-              if (kindInfo.kind === "unicode" && meta) {
-                const alias = resolveAliasFromMeta(meta, k);
-                if (alias) {
-                  if (alias.kind === "custom") {
-                    kindInfo = { kind: "custom", name: alias.name, host: alias.host };
-                  } else {
-                    out.push({ name: alias.char, url: null, count, char: alias.char });
-                    continue;
-                  }
-                }
+              // 별칭(알리아스) 탐색: meta에 'blobcataww2' -> ':blobcataww2@blob.cat:' 같은 매핑이 있을 수 있음
+              const alias = meta ? resolveAliasFromMeta(meta, k) : null;
+              // alias 결과가 커스텀이고 host가 있으면, kindInfo를 그 호스트로 보정
+              if (alias?.kind === "custom") {
+                kindInfo = { kind: "custom", name: alias.name, host: alias.host || kindInfo.host };
+              } else if (alias?.kind === "unicode") {
+                // 별칭이 유니코드로 직접 매핑되는 경우
+                out.push({ name: alias.char, url: null, count, char: alias.char });
+                continue;
               }
 
               if (kindInfo.kind === "unicode") {
+                // 진짜 유니코드(커스텀 아님)
                 out.push({ name: kindInfo.name, url: null, count, char: kindInfo.name });
               } else {
                 const name = kindInfo.name;
-                const url1 = meta ? resolveEmojiUrlFromMeta(meta, name) : null;
-                const url2 = resolveEmojiUrlFromApTag(obj, name);
-                out.push({ name, url: url1 || url2 || null, count });
+                // 1) 원글 호스트 meta
+                let url = meta ? resolveEmojiUrlFromMeta(meta, name) : null;
+
+                // 2) alias에서 원격 호스트가 밝혀진 경우 그 호스트 meta도 조회
+                if (!url && kindInfo.host) {
+                  url = await getEmojiUrlFromHost(env, kindInfo.host, name);
+                }
+
+                // 3) AP object 태그에서도 마지막으로 시도
+                if (!url) {
+                  url = resolveEmojiUrlFromApTag(obj, name);
+                }
+
+                out.push({ name, url: url || null, count });
               }
             }
+
 
             if (out.length) {
               st._mkReactions = out;
