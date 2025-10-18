@@ -615,10 +615,6 @@ document.getElementById('tab-home').addEventListener('click', async () => {
 document.getElementById('tab-fav').addEventListener('click', async () => {
   mode = 'fav'; cursor = null; feedEl.innerHTML = ''; await loadPage(true); await autofillIfNeeded();
 });
-document.getElementById('tab-mine').addEventListener('click', async () => {
-  mode = 'mine'; cursor = null; feedEl.innerHTML = '';
-  await loadPage(true); await autofillIfNeeded();
-});
 document.getElementById('logout').addEventListener('click', async () => {
   try {
     if (source === 'masto') await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
