@@ -660,7 +660,9 @@ async function renderPostHTML(post, opts) {
     let mkEmojiList = [];
     const needMkEmoji = Array.isArray(base?._mkReactions) && base._mkReactions.some(r => !r.url);
     if (needMkEmoji) {
-      const mkReHost = base?._mkHost || base?._mkDebug?.host || null;
+      const mkReHost = base?._mkHost
+        || base?._mkDebug?.host
+        || (base?._mkDebug?.apUri ? new URL(base._mkDebug.apUri).host : null);
       mkEmojiList = mkReHost ? await getMisskeyEmojis(mkReHost) : [];
     }
     const resolveMkUrl = (name) => {

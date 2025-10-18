@@ -119,7 +119,7 @@ async function getMisskeyMeta(env: Env, host: string) {
   if (!res.ok) return null;
   const meta = await res.json();
   metaMem.set(host, meta);
-  await env.FEDIOAUTH_KV.put(kvKey, JSON.stringify(meta), { expirationTtl: 86400 });
+  await env.FEDIOAUTH_KV.put(`mkmeta:${host.toLowerCase()}`, JSON.stringify(meta), { expirationTtl: 86400 });
   return meta;
 }
 
@@ -353,7 +353,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
               let kindInfo = parseMkReactionKey(k);
 
               // 별칭(알리아스) 탐색: meta에 'blobcataww2' -> ':blobcataww2@blob.cat:' 같은 매핑이 있을 수 있음
-              const alias = meta ? resolveAliasFromMeta(meta, k) : null;
+              const alias = meta ? resolveAliasFromMeta(meta, normalizeName(k)) : null;
               // alias 결과가 커스텀이고 host가 있으면, kindInfo를 그 호스트로 보정
               if (alias?.kind === "custom") {
                 kindInfo = { kind: "custom", name: alias.name, host: alias.host || kindInfo.host };
@@ -377,7 +377,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
 
                 // 2) alias에서 원격 호스트가 밝혀진 경우 그 호스트 meta도 조회
                 if (!url && kindInfo.host) {
-                  url = await getEmojiUrlFromHost(env, kindInfo.host, name);
+                  url = await getEmojiUrlFromHost(env, kindInfo.host.toLowerCase(), name);
                 }
 
                 // 3) AP object 태그에서도 마지막으로 시도
