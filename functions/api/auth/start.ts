@@ -2,6 +2,7 @@
 import type { PagesFunction, KVNamespace } from "@cloudflare/workers-types";
 
 // ✅ OAuth 권한 스코프 (좋아요, 글쓰기, 팔로우, 알림 푸시까지 포함)
+const APP_VER = 2;
 const SCOPE = "read write follow push";
 
 // ✅ BufferSource 를 받도록
@@ -32,7 +33,7 @@ export const onRequestGet: PagesFunction<{ FEDIOAUTH_KV: KVNamespace }> = async 
   const iss = (u.searchParams.get("iss") || "").toLowerCase().trim();
   if (!iss || !validHost(iss)) return new Response("Invalid instance host", { status: 400 });
 
-  const kvKey = `app:${iss}`;
+  const kvKey = `app:v${APP_VER}:${iss}`; // ← 기존 'app:${iss}' 대신 버전 포함
   let app = (await env.FEDIOAUTH_KV.get(kvKey, { type: "json" })) as any | null;
 
   // 1) 앱 등록 (없으면 새로 생성)
