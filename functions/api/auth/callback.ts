@@ -73,7 +73,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 
   // 4) 세션 쿠키 설정
   const maxAge = tok.expires_in ?? 60 * 60 * 24 * 30; // 30일 기본
-  const headers = new Headers({ Location: "/" });
+  const headers = new Headers({ Location: "/app.html" });
   headers.append(
     "Set-Cookie",
     `ap_token=${tok.access_token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`
