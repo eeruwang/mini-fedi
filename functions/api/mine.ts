@@ -46,7 +46,7 @@ export const onRequestGet: PagesFunction = async ({ request }) => {
     // 2) 내 글 목록
     const api = new URL(`https://${inst}/api/v1/accounts/${encodeURIComponent(myId)}/statuses`);
     api.searchParams.set("limit", "20");
-    // 필요 시 필터 옵션:
+    // 필요 시:
     // api.searchParams.set("exclude_replies","true");
     // api.searchParams.set("exclude_reblogs","true");
     if (max_id) api.searchParams.set("max_id", max_id);
@@ -61,7 +61,6 @@ export const onRequestGet: PagesFunction = async ({ request }) => {
       });
     }
 
-    // ⬇️ TS가 {}로 잡지 않게: unknown → 배열로 단언 + 런타임 검사
     const raw = (await listRes.json()) as unknown;
     if (!Array.isArray(raw)) {
       return new Response(JSON.stringify({ error: "unexpected response shape" }), {

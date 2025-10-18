@@ -40,7 +40,6 @@ export const onRequestGet: PagesFunction = async ({ request }) => {
       });
     }
 
-    // ⬇️ TS가 {}로 잡지 않게: unknown → 배열로 단언 + 런타임 검사
     const raw = (await r.json()) as unknown;
     if (!Array.isArray(raw)) {
       return new Response(JSON.stringify({ error: "unexpected response shape" }), {

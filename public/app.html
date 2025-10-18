@@ -93,7 +93,21 @@
     .user-chip .avatar-mini{
       width:16px; height:16px; border-radius:999px; object-fit:cover; background:#222;
     }
-
+    /* 헤더 계정 칩 스타일 */
+    .acct {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .acct .avatar-mini,
+    #acct-avatar {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      object-fit: cover;
+      background: #222;
+    }
   </style>
 </head>
 <body>
@@ -102,11 +116,13 @@
     <div class="row" style="gap:6px;">
       <button id="tab-home" class="btn">Home</button>
       <button id="tab-fav" class="btn">Favourites</button>
-      <button id="tab-mine" class="btn">Me</button>
     </div>
     <div style="flex:1"></div>
     <div class="row">
-      <span id="acct" class="pill">…</span>
+      <button id="acct-btn" class="pill acct" title="내 글 보기">
+        <img id="acct-avatar" class="avatar-mini" alt="" />
+        <span id="acct-name">…</span>
+      </button>
       <button id="theme-toggle" class="btn" title="Toggle theme">🌙</button>
       <button id="logout" class="btn">Logout</button>
     </div>
@@ -433,6 +449,7 @@ async function loadMe() {
     // 프로필 표시용 데이터
     const display = me?.display_name || me?.username || '';
     const handle  = me?.acct ? `@${me.acct}` : (me?.username ? `@${me.username}` : '');
+    const avatar  = me?.avatar_static || me?.avatar || '';
 
     // 이모지 맵(프로필 이름에 커스텀 이모지가 있을 수 있음)
     const list = Array.isArray(me?.emojis)
@@ -443,17 +460,21 @@ async function loadMe() {
         }).filter(Boolean)
       : [];
 
-    const acctEl = document.getElementById('acct');
-    if (acctEl) {
-      acctEl.innerHTML =
+    const nameEl = document.getElementById('acct-name');
+    const avEl   = document.getElementById('acct-avatar');
+
+    if (nameEl) {
+      nameEl.innerHTML =
         `${renderEmojisToHTML(escapeHTML(display), list)} <span class="meta">${escapeHTML(handle)}</span>`;
+    }
+    if (avEl && avatar) {
+      avEl.src = avatar;
     }
 
     myMastoId = me?.id || null;
     myAcct = me?.acct || null;
     return 'masto';
   };
-
   const tryMisskey = async () => {
     const me = await jfetch('/api/mk/me');
     source = 'misskey';
@@ -461,11 +482,17 @@ async function loadMe() {
 
     const display = me?.name || me?.username || '';
     const handle  = me?.username ? `@${me.username}` : '';
+    const avatar  = me?.avatarUrl || me?.avatar || '';
 
-    const acctEl = document.getElementById('acct');
-    if (acctEl) {
-      acctEl.innerHTML =
+    const nameEl = document.getElementById('acct-name');
+    const avEl   = document.getElementById('acct-avatar');
+
+    if (nameEl) {
+      nameEl.innerHTML =
         `${escapeHTML(display)} <span class="meta">${escapeHTML(handle)}</span>`;
+    }
+    if (avEl && avatar) {
+      avEl.src = avatar;
     }
 
     myMkId = me?.id || null;
@@ -599,7 +626,14 @@ document.getElementById('logout').addEventListener('click', async () => {
     location.href = '/';
   }
 });
-// 좋아요(⭐) 버튼 클릭
+// 이름(계정 칩) 클릭 시 "내 글" 피드로
+document.getElementById('acct-btn')?.addEventListener('click', async () => {
+  mode = 'mine';
+  cursor = null;
+  feedEl.innerHTML = '';
+  await loadPage(true);
+  await autofillIfNeeded();
+});
 // 좋아요(⭐) 버튼 클릭
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('.like-btn');
