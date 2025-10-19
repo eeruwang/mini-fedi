@@ -74,7 +74,6 @@
     .post {
       padding: 14px 16px;
       border-bottom: 1px solid var(--border);
-      border-radius: 0;
     }
     .post:first-child { border-top-left-radius: var(--radius); border-top-right-radius: var(--radius); }
     .post:last-child  { border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); border-bottom: 1px solid var(--border); }
@@ -353,55 +352,21 @@ try {
 } catch {}
 
 /* =========================
-   Emoji map (Misskey & Masto)
+   Emoji map & resolution (Misskey & Masto)
    ========================= */
 const emojiMapCache = new Map();      // host -> [{name,url}]
 const emojiMapPromise = new Map();    // host -> Promise
+const emojiIndexCache = new Map();    // host -> { byExact: Map, byLower: Map }
+const resolvedEmojiCache = new Map(); // key(hostsKey|nameLower) -> url  (LRU-like trimming)
 
-async function getMisskeyEmojis(host) {
-  if (!host) return [];
-  host = host.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-  if (emojiMapCache.has(host)) return emojiMapCache.get(host);
-  if (emojiMapPromise.has(host)) return emojiMapPromise.get(host);
-
-  const p = jfetch(`/api/mk/emoji?host=${encodeURIComponent(host)}`)
-    .then(data => {
-      const map = data?.map || {};
-      const list = Object.entries(map).map(([name, v]) => ({
-        name,
-        url: (v && (v.static_url || v.url)) || null
-      })).filter(e => e.url);
-      emojiMapCache.set(host, list);
-      emojiMapPromise.delete(host);
-      return list;
-    })
-    .catch(() => {
-      emojiMapPromise.delete(host);
-      return [];
-    });
-  emojiMapPromise.set(host, p);
-  return p;
-}
-
-function buildMastoEmojiMap(status) {
-  const all = [];
-  if (Array.isArray(status?.emojis)) all.push(...status.emojis);
-  if (Array.isArray(status?.account?.emojis)) all.push(...status.account.emojis);
-  if (Array.isArray(status?.poll?.emojis)) all.push(...status.poll.emojis);
-  const out = [];
-  for (const e of all) {
-    if (e && typeof e.shortcode === 'string' && typeof e.url === 'string') {
-      out.push({ name: e.shortcode, url: e.url });
-    }
-  }
-  const seen = new Set();
-  return out.filter(e => (seen.has(e.name) ? false : (seen.add(e.name), true)));
-}
-
-/* =========================
-   Emoji helpers
-   ========================= */
+/* ---- utils ---- */
 function escapeRegExp(s='') { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function normHost(h=''){ return String(h).replace(/^https?:\/\//,'').replace(/\/+$/,'').toLowerCase(); }
+function eqCaseInsensitive(a,b){ return String(a||'').toLowerCase() === String(b||'').toLowerCase(); }
+
+function escapeHTML(s='') {
+  return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
+}
 
 // ':name@host:' | ':name:' | 'name@host' | 'name' | '❤'
 function parseQualifiedEmoji(raw = '') {
@@ -418,11 +383,59 @@ function parseQualifiedEmoji(raw = '') {
   return { name: s, host: null, char: null };
 }
 
-function normalizeEmojiName(raw='') {
-  const { name, char } = parseQualifiedEmoji(raw);
-  return char ? null : (name || null);
+/* ---- misskey emoji list fetch (via backend proxy) ---- */
+async function getMisskeyEmojis(host) {
+  if (!host) return [];
+  host = normHost(host);
+  if (emojiMapCache.has(host)) return emojiMapCache.get(host);
+  if (emojiMapPromise.has(host)) return emojiMapPromise.get(host);
+
+  const p = jfetch(`/api/mk/emoji?host=${encodeURIComponent(host)}`)
+    .then(data => {
+      const map = data?.map || {};
+      const list = Object.entries(map).map(([name, v]) => ({
+        name,
+        url: (v && (v.static_url || v.url)) || null
+      })).filter(e => e.url);
+
+      // 인덱스(성능)
+      const byExact = new Map();
+      const byLower = new Map();
+      for (const e of list) {
+        byExact.set(e.name, e);
+        byLower.set(String(e.name).toLowerCase(), e);
+      }
+      emojiIndexCache.set(host, { byExact, byLower });
+
+      emojiMapCache.set(host, list);
+      emojiMapPromise.delete(host);
+      return list;
+    })
+    .catch(() => {
+      emojiMapPromise.delete(host);
+      return [];
+    });
+  emojiMapPromise.set(host, p);
+  return p;
 }
 
+/* ---- mastodon custom emoji map for names in content/display_name ---- */
+function buildMastoEmojiMap(status) {
+  const all = [];
+  if (Array.isArray(status?.emojis)) all.push(...status.emojis);
+  if (Array.isArray(status?.account?.emojis)) all.push(...status.account.emojis);
+  if (Array.isArray(status?.poll?.emojis)) all.push(...status.poll.emojis);
+  const out = [];
+  for (const e of all) {
+    if (e && typeof e.shortcode === 'string' && typeof e.url === 'string') {
+      out.push({ name: e.shortcode, url: e.url });
+    }
+  }
+  const seen = new Set();
+  return out.filter(e => (seen.has(e.name) ? false : (seen.add(e.name), true)));
+}
+
+/* ---- content emoji replacer ---- */
 function renderEmojisToHTML(textOrHTML, emojiList) {
   if (!textOrHTML || !emojiList?.length) return textOrHTML || '';
   let html = String(textOrHTML);
@@ -437,19 +450,67 @@ function renderEmojisToHTML(textOrHTML, emojiList) {
   return html;
 }
 
+/* ---- resolve single host with case-insensitive fallback ---- */
 async function resolveMisskeyEmojiURLByHost(hostCandidate, nameOrQualified) {
   const parsed = parseQualifiedEmoji(nameOrQualified);
-  if (parsed.char) return null; // 유니코드엔 URL 없음
+  if (parsed.char) return null;
   const name = parsed.name;
-  const host = parsed.host || hostCandidate || null;
+  const host = normHost(parsed.host || hostCandidate || '');
   if (!host || !name) return null;
-  const list = await getMisskeyEmojis(host);
-  const found = list.find(e => e?.name === name);
+
+  // 인덱스로 O(1) 조회
+  await getMisskeyEmojis(host);
+  const idx = emojiIndexCache.get(host);
+  if (!idx) return null;
+  let found = idx.byExact.get(name) || idx.byLower.get(String(name).toLowerCase());
   return found?.url || null;
 }
 
-function escapeHTML(s='') {
-  return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
+/* ---- resolve across multiple hosts (with cache & debug) ---- */
+function makeResolvedKey(hostsArr, name) {
+  return `${hostsArr.map(normHost).sort().join('|')}|${String(name||'').toLowerCase()}`;
+}
+function resolvedCacheSet(k, v) {
+  resolvedEmojiCache.set(k, v);
+  // 아주 간단한 LRU(크기 제한)
+  if (resolvedEmojiCache.size > 4000) {
+    const it = resolvedEmojiCache.keys();
+    for (let i=0;i<1000;i++){ const n = it.next(); if (n.done) break; resolvedEmojiCache.delete(n.value); }
+  }
+}
+async function resolveEmojiAcrossHostsWithDebug(hosts, nameOrQualified) {
+  const parsed = parseQualifiedEmoji(nameOrQualified);
+  if (parsed.char) return { url: null, tried: [], reason: 'unicode' };
+
+  const tried = [];
+  const seen = new Set();
+  const add = (h)=>{ const n=normHost(h||''); if(n && !seen.has(n)){ seen.add(n); tried.push(n); } };
+
+  if (parsed.host) add(parsed.host);
+  for (const h of hosts||[]) add(h);
+
+  const cacheKey = makeResolvedKey(tried, parsed.name);
+  if (resolvedEmojiCache.has(cacheKey)) {
+    const url = resolvedEmojiCache.get(cacheKey);
+    return { url, tried, hit: url ? '__cache__' : null, match: url ? 'cache' : null };
+  }
+
+  // 미리 병렬로 이모지 목록 로드(네트워크 회수 최소화)
+  await Promise.all(tried.map(h => getMisskeyEmojis(h)));
+
+  for (const h of tried) {
+    const idx = emojiIndexCache.get(h);
+    if (!idx) continue;
+    let hit = idx.byExact.get(parsed.name);
+    let match = 'exact';
+    if (!hit) { hit = idx.byLower.get(String(parsed.name).toLowerCase()); match = hit ? 'loose' : null; }
+    if (hit) {
+      resolvedCacheSet(cacheKey, hit.url || null);
+      return { url: hit.url || null, tried, hit: h, match };
+    }
+  }
+  resolvedCacheSet(cacheKey, null);
+  return { url: null, tried, reason: 'not_found' };
 }
 
 /* =========================
@@ -480,7 +541,6 @@ async function checkForUpdates() {
     if (!items.length) return;
 
     const toPrepend = [...items].reverse();
-    const nearTop = window.scrollY < 80;
 
     for (const post of toPrepend) {
       const html = await renderPostHTML(post, { source });
@@ -505,7 +565,6 @@ async function checkForUpdates() {
       }
     } catch {}
 
-    if (nearTop) {}
     const MAX_POSTS = 400;
     while (feedEl.children.length > MAX_POSTS) {
       feedEl.removeChild(feedEl.lastElementChild);
@@ -551,6 +610,19 @@ function renderMedia(post) {
 /* =========================
    Post card rendering
    ========================= */
+const feedEl = document.getElementById('feed');
+let myMastoId = null;
+let myMkId = null;
+let myAcct = null;
+let mode = 'home';
+let isLoading = false;
+let cursor = null;
+let source = null;
+let activeHost = null;
+
+function hasMastoCookies() { return !!getCookie('ap_token') && !!getCookie('ap_inst'); }
+function hasMisskeyCookies() { return !!getCookie('mk_token') && !!getCookie('mk_host'); }
+
 async function renderPostHTML(post, opts) {
   const { source } = opts;
 
@@ -575,7 +647,7 @@ async function renderPostHTML(post, opts) {
     const boosts = base?.reblogs_count ?? 0;
     const replies = base?.replies_count ?? 0;
 
-    // ===== Misskey reactions (from bridge)
+    // ===== Misskey reactions from bridge =====
     const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
 
     function deriveMkReactionsFromRaw(debugObj) {
@@ -594,7 +666,7 @@ async function renderPostHTML(post, opts) {
       (post && post._mkReactions) ||
       deriveMkReactionsFromRaw(debugObj) || [];
 
-    // 이모지 맵 프리페치: 원글 호스트 + 리액션별 host + reactions_raw 내 host
+    // 후보 호스트 수집
     const deriveHost = () => {
       if (base && base._mkHost) return base._mkHost;
       if (post && post._mkHost) return post._mkHost;
@@ -609,29 +681,30 @@ async function renderPostHTML(post, opts) {
     const mkHostGuess = deriveHost();
 
     const hostsToPrefetch = new Set();
-    if (mkHostGuess) hostsToPrefetch.add(mkHostGuess);
+    if (mkHostGuess) hostsToPrefetch.add(normHost(mkHostGuess));
+    try {
+      const acctDomain = (acc?.acct && acc.acct.includes('@')) ? acc.acct.split('@')[1] : null;
+      if (acctDomain) hostsToPrefetch.add(normHost(acctDomain));
+    } catch {}
+    if (activeHost) hostsToPrefetch.add(normHost(activeHost));
 
     if (Array.isArray(mkReactions) && mkReactions.length) {
       for (const r of mkReactions) {
-        const h1 = (r && typeof r.host === 'string' && r.host !== '.' && r.host) ? r.host : null;
-        if (h1) hostsToPrefetch.add(h1);           // ← 반드시 유지
         const q = (r?.qualified ?? r?.name ?? '').toString();
         const p = parseQualifiedEmoji(q);
-        if (p.host) hostsToPrefetch.add(p.host);
-      }
-    }
-    if (debugObj?.reactions_raw && typeof debugObj.reactions_raw === 'object') {
-      for (const key of Object.keys(debugObj.reactions_raw)) {
-        const p = parseQualifiedEmoji(key);
-        if (p.host) hostsToPrefetch.add(p.host);
+        const h1 = (r && typeof r.host === 'string' && r.host !== '.' && r.host) ? r.host : null;
+        if (h1) hostsToPrefetch.add(normHost(h1));
+        if (p.host) hostsToPrefetch.add(normHost(p.host));
       }
     }
 
+    // 성능: 호스트 목록 한번에 프리페치
     await Promise.all([...hostsToPrefetch].map(h => getMisskeyEmojis(h)));
 
-    const mkReHostFallback = mkHostGuess;
+    const debugRows = [];
+    const likeTargetId = base?.id || post?.id;
 
-    // 리액션 HTML
+    // 리액션 HTML (병렬)
     let reactionsHTML = '';
     if (Array.isArray(mkReactions)) {
       const pieces = await Promise.all(mkReactions.map(async (r) => {
@@ -639,7 +712,7 @@ async function renderPostHTML(post, opts) {
         const p = parseQualifiedEmoji(q); // { name, host, char }
         const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : (typeof r.count === 'number' ? '' : '');
 
-        // 1) URL 제공됨
+        // 1) URL 직접 제공
         if (r?.url) {
           const alt = p.char ? p.char : (p.name ? `:${p.name}:` : (q || '❓'));
           return `<span class="badge"><img src="${r.url}" alt="${alt}" />${cnt}</span>`;
@@ -648,16 +721,17 @@ async function renderPostHTML(post, opts) {
         if (p.char && !p.name) {
           return `<span class="badge">${p.char} ${cnt}</span>`;
         }
-        // 3) 커스텀 이모지 해상
-        const host = (p.host || r?.host || mkReHostFallback || null);
-        if (host && p.name) {
-          let url = await resolveMisskeyEmojiURLByHost(host, q);
-          if (!url) {
-            await getMisskeyEmojis(host).catch(() => {});
-            url = await resolveMisskeyEmojiURLByHost(host, q);
-          }
+        // 3) 커스텀 이모지: 여러 후보 호스트 순회
+        if (p.name) {
+          const candidates = new Set();
+          if (p.host) candidates.add(normHost(p.host));
+          for (const h of hostsToPrefetch) candidates.add(normHost(h));
+          const { url, tried, hit, match } = await resolveEmojiAcrossHostsWithDebug([...candidates], q);
           if (url) {
+            if (debugOn) debugRows.push({key:q, tried, hit, match, url});
             return `<span class="badge"><img src="${url}" alt=":${p.name}:" />${cnt}</span>`;
+          } else if (debugOn) {
+            debugRows.push({key:q, tried, hit:null, match:null, url:null});
           }
         }
         // 4) 폴백 라벨
@@ -667,7 +741,6 @@ async function renderPostHTML(post, opts) {
       reactionsHTML += pieces.join('');
     }
 
-    const likeTargetId = base?.id || post?.id;
     reactionsHTML += `
       <button class="badge reply-toggle" data-id="${likeTargetId}" title="Show replies">💬 ${replies}</button>
       <span class="badge">♺ ${boosts}</span>
@@ -681,6 +754,24 @@ async function renderPostHTML(post, opts) {
     const debugHTML = (debugOn && debugObj)
       ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(debugObj, null, 2))}</pre>`
       : '';
+
+    const debugTable = (debugOn && debugRows?.length)
+      ? `<div class="meta" style="margin-top:6px;overflow:auto">
+          <table style="font-size:12px;border-collapse:collapse;border:1px dashed var(--border)">
+            <thead><tr><th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">key</th>
+                       <th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">hit</th>
+                       <th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">match</th>
+                       <th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">tried</th></tr></thead>
+            <tbody>
+              ${debugRows.map(r=>`<tr>
+                 <td style="padding:4px 6px;border-top:1px dashed var(--border)">${escapeHTML(r.key||'')}</td>
+                 <td style="padding:4px 6px;border-top:1px dashed var(--border)">${escapeHTML(r.hit||'')}</td>
+                 <td style="padding:4px 6px;border-top:1px dashed var(--border)">${escapeHTML(r.match||'')}</td>
+                 <td style="padding:4px 6px;border-top:1px dashed var(--border)">${(r.tried||[]).map(escapeHTML).join(', ')}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>` : '';
 
     const likersBlock = `<div class="likers" data-for="${likeTargetId}" hidden></div>`;
 
@@ -711,6 +802,7 @@ async function renderPostHTML(post, opts) {
             ${mediaHTML}
             <div class="reactions">${reactionsHTML}</div>
             ${debugHTML}
+            ${debugTable}
           </div>
           <div class="thread" data-for="${likeTargetId}" hidden></div>
         </article>
@@ -731,6 +823,7 @@ async function renderPostHTML(post, opts) {
         <div class="reactions">${reactionsHTML}</div>
         ${likersBlock}
         ${debugHTML}
+        ${debugTable}
         <div class="thread" data-for="${likeTargetId}" hidden></div>
       </article>
     `;
@@ -753,11 +846,10 @@ async function renderPostHTML(post, opts) {
     const rx = post?.reactions || {};
     const rxBadges = [];
     if (rx && typeof rx === 'object') {
-      // 이 노트가 속한 "원글 호스트" 추론 (원격 리액션에 host가 없을 때 폴백)
       const postHost =
         (post?._mkDebug && post._mkDebug.host) ||
         (() => { try { return new URL(post?.url || post?.uri || '').host } catch { return null } })() ||
-        host; // 최후 폴백: 내 로그인 호스트
+        host;
       for (const key of Object.keys(rx)) {
         const count = rx[key];
         const parsed = parseQualifiedEmoji(key);
@@ -765,23 +857,20 @@ async function renderPostHTML(post, opts) {
           rxBadges.push(`<span class="badge">${parsed.char} ${count}</span>`);
           continue;
         }
-        let em = emojiList.find(e => e.name === (parsed.name || ''));
-        // 1) 리액션 키에 host가 명시되면 그 호스트의 이모지 목록을 조회
+        let em = (emojiIndexCache.get(normHost(host))?.byExact.get(parsed.name))
+              || (emojiIndexCache.get(normHost(host))?.byLower.get(String(parsed.name).toLowerCase()));
         if (!em && parsed.host) {
-          const remoteList = await getMisskeyEmojis(parsed.host).catch(() => []);
-          em = remoteList.find(e => e.name === (parsed.name || ''));
+          await getMisskeyEmojis(parsed.host);
+          const idx = emojiIndexCache.get(normHost(parsed.host));
+          em = idx?.byExact.get(parsed.name) || idx?.byLower.get(String(parsed.name).toLowerCase());
         }
-        // 2) host가 없으면 "그 노트가 속한 호스트"에서 조회
         if (!em && postHost) {
-          const list = await getMisskeyEmojis(postHost).catch(() => []);
-          em = list.find(e => e.name === (parsed.name || ''));
+          await getMisskeyEmojis(postHost);
+          const idx = emojiIndexCache.get(normHost(postHost));
+          em = idx?.byExact.get(parsed.name) || idx?.byLower.get(String(parsed.name).toLowerCase());
         }
-
-        if (em?.url) {
-          rxBadges.push(`<span class="badge"><img src="${em.url}" alt=":${parsed.name}:" />${count}</span>`);
-        } else {
-          rxBadges.push(`<span class="badge">:${parsed.name}: ${count}</span>`);
-        }
+        if (em?.url) rxBadges.push(`<span class="badge"><img src="${em.url}" alt=":${parsed.name}:" />${count}</span>`);
+        else rxBadges.push(`<span class="badge">:${parsed.name}: ${count}</span>`);
       }
     }
 
@@ -807,19 +896,6 @@ async function renderPostHTML(post, opts) {
 /* =========================
    Timeline state & loaders
    ========================= */
-const feedEl = document.getElementById('feed');
-let myMastoId = null;
-let myMkId = null;
-let myAcct = null;
-let mode = 'home';
-let isLoading = false;
-let cursor = null;
-let source = null;
-let activeHost = null;
-
-function hasMastoCookies() { return !!getCookie('ap_token') && !!getCookie('ap_inst'); }
-function hasMisskeyCookies() { return !!getCookie('mk_token') && !!getCookie('mk_host'); }
-
 async function loadMe() {
   const preferMasto = hasMastoCookies();
   const preferMisskey = hasMisskeyCookies();
@@ -913,7 +989,8 @@ async function loadPage(initial=false) {
       source === 'masto' ? u.searchParams.set('max_id', cursor)
                         : u.searchParams.set('untilId', cursor);
     }
-    if (new URL(location.href).searchParams.get('debug') === '1') {
+    if (new URL(location.href).searchParams.get('debug') === '1' ||
+        new URL(location.href).searchParams.get('debug') === '2') {
       u.searchParams.set('debug', '1');
     }
 
