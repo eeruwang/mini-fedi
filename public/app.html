@@ -364,7 +364,7 @@ async function getMisskeyEmojis(host) {
   if (emojiMapCache.has(host)) return emojiMapCache.get(host);
   if (emojiMapPromise.has(host)) return emojiMapPromise.get(host);
 
-  const p = jfetch(`/mk/emoji?host=${encodeURIComponent(host)}`)
+  const p = jfetch(`/api/mk/emoji?host=${encodeURIComponent(host)}`)
     .then(data => {
       const map = data?.map || {};
       const list = Object.entries(map).map(([name, v]) => ({
