@@ -74,6 +74,10 @@
     .post {
       padding: 14px 16px;
       border-bottom: 1px solid var(--border);
+
+      /* 성능: 오프스크린 스킵 + 추정 높이 */
+      content-visibility: auto;
+      contain-intrinsic-size: 0 420px;
     }
     .post:first-child { border-top-left-radius: var(--radius); border-top-right-radius: var(--radius); }
     .post:last-child  { border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); border-bottom: 1px solid var(--border); }
@@ -261,6 +265,30 @@ async function jfetch(url, opts = {}) {
 }
 const likersCache = new Map(); // id -> HTML
 
+/* ===== 비동기 우선순위/동시성 유틸 ===== */
+function defer(fn) {
+  if (window.requestIdleCallback) return requestIdleCallback(() => fn(), { timeout: 1200 });
+  return setTimeout(fn, 0);
+}
+const REACTION_QUEUE = [];
+let REACTION_ACTIVE = 0;
+const REACTION_MAX_CONCURRENCY = 3;
+function scheduleReactionTask(task) {
+  REACTION_QUEUE.push(task);
+  pumpReactionQueue();
+}
+function pumpReactionQueue() {
+  while (REACTION_ACTIVE < REACTION_MAX_CONCURRENCY && REACTION_QUEUE.length) {
+    const t = REACTION_QUEUE.shift();
+    REACTION_ACTIVE++;
+    defer(async () => {
+      try { await t(); } catch {}
+      REACTION_ACTIVE--;
+      pumpReactionQueue();
+    });
+  }
+}
+
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('.likers-toggle');
   if (!btn) return;
@@ -305,7 +333,7 @@ document.addEventListener('click', async (ev) => {
       const ava = u.avatar_static || u.avatar || '';
       return `
         <div class="liker-chip">
-          <img src="${ava}" alt="" loading="lazy" />
+          <img src="${ava}" alt="" loading="lazy" decoding="async" fetchpriority="low" />
           <div class="txt">
             <strong>${escapeHTML(name)}</strong>
             <span class="meta">${escapeHTML(handle)}</span>
@@ -357,7 +385,7 @@ try {
 const emojiMapCache = new Map();      // host -> [{name,url}]
 const emojiMapPromise = new Map();    // host -> Promise
 const emojiIndexCache = new Map();    // host -> { byExact: Map, byLower: Map }
-const resolvedEmojiCache = new Map(); // key(hostsKey|nameLower) -> url  (LRU-like trimming)
+const resolvedEmojiCache = new Map(); // key(hostsKey|nameLower) -> url (간단 LRU)
 
 /* ---- utils ---- */
 function escapeRegExp(s='') { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -384,11 +412,40 @@ function parseQualifiedEmoji(raw = '') {
 }
 
 /* ---- misskey emoji list fetch (via backend proxy) ---- */
+const EMOJI_LS_PREFIX = 'mkEmoji:v1:';
+const EMOJI_LS_TTL_MS = 24 * 60 * 60 * 1000;
+
+function lsLoadEmoji(host) {
+  try {
+    const raw = localStorage.getItem(EMOJI_LS_PREFIX + host);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !data.t || !Array.isArray(data.list)) return null;
+    if (Date.now() - data.t > EMOJI_LS_TTL_MS) return null;
+    return data.list;
+  } catch { return null; }
+}
+function lsSaveEmoji(host, list) {
+  try {
+    localStorage.setItem(EMOJI_LS_PREFIX + host, JSON.stringify({ t: Date.now(), list }));
+  } catch {}
+}
+
 async function getMisskeyEmojis(host) {
   if (!host) return [];
   host = normHost(host);
+
   if (emojiMapCache.has(host)) return emojiMapCache.get(host);
   if (emojiMapPromise.has(host)) return emojiMapPromise.get(host);
+
+  const cached = lsLoadEmoji(host);
+  if (cached) {
+    const byExact = new Map(), byLower = new Map();
+    for (const e of cached) { byExact.set(e.name, e); byLower.set(e.name.toLowerCase(), e); }
+    emojiIndexCache.set(host, { byExact, byLower });
+    emojiMapCache.set(host, cached);
+    return cached;
+  }
 
   const p = jfetch(`/api/mk/emoji?host=${encodeURIComponent(host)}`)
     .then(data => {
@@ -398,23 +455,18 @@ async function getMisskeyEmojis(host) {
         url: (v && (v.static_url || v.url)) || null
       })).filter(e => e.url);
 
-      // 인덱스(성능)
-      const byExact = new Map();
-      const byLower = new Map();
-      for (const e of list) {
-        byExact.set(e.name, e);
-        byLower.set(String(e.name).toLowerCase(), e);
-      }
+      const byExact = new Map(), byLower = new Map();
+      for (const e of list) { byExact.set(e.name, e); byLower.set(e.name.toLowerCase(), e); }
       emojiIndexCache.set(host, { byExact, byLower });
 
       emojiMapCache.set(host, list);
+      lsSaveEmoji(host, list);
+
       emojiMapPromise.delete(host);
       return list;
     })
-    .catch(() => {
-      emojiMapPromise.delete(host);
-      return [];
-    });
+    .catch(() => { emojiMapPromise.delete(host); return []; });
+
   emojiMapPromise.set(host, p);
   return p;
 }
@@ -444,13 +496,14 @@ function renderEmojisToHTML(textOrHTML, emojiList) {
     const re = new RegExp(`:${escapeRegExp(e.name)}:`, 'g');
     html = html.replace(
       re,
-      `<img src="${e.url}" alt=":${e.name}:" style="height:1.2em;width:auto;vertical-align:-0.2em;aspect-ratio:auto;display:inline-block;">`
+      `<img src="${e.url}" alt=":${e.name}:" loading="lazy" decoding="async" fetchpriority="low"
+             style="height:1.2em;width:auto;vertical-align:-0.2em;aspect-ratio:auto;display:inline-block;">`
     );
   }
   return html;
 }
 
-/* ---- resolve single host with case-insensitive fallback ---- */
+/* ---- resolve helpers ---- */
 async function resolveMisskeyEmojiURLByHost(hostCandidate, nameOrQualified) {
   const parsed = parseQualifiedEmoji(nameOrQualified);
   if (parsed.char) return null;
@@ -458,21 +511,17 @@ async function resolveMisskeyEmojiURLByHost(hostCandidate, nameOrQualified) {
   const host = normHost(parsed.host || hostCandidate || '');
   if (!host || !name) return null;
 
-  // 인덱스로 O(1) 조회
   await getMisskeyEmojis(host);
   const idx = emojiIndexCache.get(host);
   if (!idx) return null;
   let found = idx.byExact.get(name) || idx.byLower.get(String(name).toLowerCase());
   return found?.url || null;
 }
-
-/* ---- resolve across multiple hosts (with cache & debug) ---- */
 function makeResolvedKey(hostsArr, name) {
   return `${hostsArr.map(normHost).sort().join('|')}|${String(name||'').toLowerCase()}`;
 }
 function resolvedCacheSet(k, v) {
   resolvedEmojiCache.set(k, v);
-  // 아주 간단한 LRU(크기 제한)
   if (resolvedEmojiCache.size > 4000) {
     const it = resolvedEmojiCache.keys();
     for (let i=0;i<1000;i++){ const n = it.next(); if (n.done) break; resolvedEmojiCache.delete(n.value); }
@@ -495,7 +544,6 @@ async function resolveEmojiAcrossHostsWithDebug(hosts, nameOrQualified) {
     return { url, tried, hit: url ? '__cache__' : null, match: url ? 'cache' : null };
   }
 
-  // 미리 병렬로 이모지 목록 로드(네트워크 회수 최소화)
   await Promise.all(tried.map(h => getMisskeyEmojis(h)));
 
   for (const h of tried) {
@@ -519,9 +567,7 @@ async function resolveEmojiAcrossHostsWithDebug(hosts, nameOrQualified) {
 let lastTopId = null;
 let refreshTimer = null;
 
-function getIdFromPost(item) {
-  return item?.reblog?.id ?? item?.id ?? null;
-}
+function getIdFromPost(item) { return item?.reblog?.id ?? item?.id ?? null; }
 function startPolling() { if (!refreshTimer) refreshTimer = setInterval(checkForUpdates, 30000); }
 function stopPolling() { if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; } }
 
@@ -590,19 +636,19 @@ function renderMedia(post) {
   for (const m of media) {
     if (m?.type && (m.url || m.preview_url)) {
       if (m.type === 'image' || m.type === 'gifv') {
-        pieces.push(`<img src="${m.preview_url || m.url}" loading="lazy" alt="" />`);
+        pieces.push(`<img src="${m.preview_url || m.url}" loading="lazy" decoding="async" fetchpriority="low" alt="" />`);
       } else if (m.type === 'video') {
-        pieces.push(`<video src="${m.url}" controls playsinline></video>`);
+        pieces.push(`<video src="${m.url}" preload="metadata" controls playsinline></video>`);
       }
       continue;
     }
     if (m?.type && (m.url || m.thumbnailUrl)) {
       const isImage = String(m.type).startsWith('image/');
-      if (isImage) pieces.push(`<img src="${m.thumbnailUrl || m.url}" loading="lazy" alt="" />`);
-      else pieces.push(`<video src="${m.url}" controls playsinline></video>`);
+      if (isImage) pieces.push(`<img src="${m.thumbnailUrl || m.url}" loading="lazy" decoding="async" fetchpriority="low" alt="" />`);
+      else pieces.push(`<video src="${m.url}" preload="metadata" controls playsinline></video>`);
       continue;
     }
-    if (m?.url) pieces.push(`<img src="${m.url}" loading="lazy" alt="" />`);
+    if (m?.url) pieces.push(`<img src="${m.url}" loading="lazy" decoding="async" fetchpriority="low" alt="" />`);
   }
   return pieces.length ? `<div class="media">${pieces.join('')}</div>` : '';
 }
@@ -622,6 +668,128 @@ let activeHost = null;
 
 function hasMastoCookies() { return !!getCookie('ap_token') && !!getCookie('ap_inst'); }
 function hasMisskeyCookies() { return !!getCookie('mk_token') && !!getCookie('mk_host'); }
+
+/* ---- 리액션 HTML 생성 분리 ---- */
+async function buildReactionsHTMLForMasto({ base, post, isMine, faves, boosts, replies, activeHost }) {
+  const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
+
+  function deriveMkReactionsFromRaw(debugObj) {
+    const out = [];
+    const raw = debugObj?.reactions_raw;
+    if (!raw || typeof raw !== 'object') return out;
+    for (const [key, cnt] of Object.entries(raw)) {
+      const parsed = parseQualifiedEmoji(key);
+      if (parsed.char) { out.push({ char: parsed.char, count: Number(cnt) || 0 }); continue; }
+      if (parsed.name) { out.push({ name: parsed.name, host: parsed.host || null, count: Number(cnt) || 0 }); }
+    }
+    return out;
+  }
+  let mkReactions =
+    (base && base._mkReactions) ||
+    (post && post._mkReactions) ||
+    deriveMkReactionsFromRaw(debugObj) || [];
+
+  // 후보 호스트 수집
+  const acc = base?.account || {};
+  const deriveHost = () => {
+    if (base && base._mkHost) return base._mkHost;
+    if (post && post._mkHost) return post._mkHost;
+    if (base && base._mkDebug?.host) return base._mkDebug.host;
+    if (post && post._mkDebug?.host) return post._mkDebug.host;
+    try { if (base && base._mkDebug?.apUri) return new URL(base._mkDebug.apUri).host; } catch {}
+    try { if (post && post._mkDebug?.apUri) return new URL(post._mkDebug.apUri).host; } catch {}
+    try { if (base?.url) return new URL(base.url).host; } catch {}
+    try { if (base?.uri) return new URL(base.uri).host; } catch {}
+    return null;
+  };
+  const mkHostGuess = deriveHost();
+
+  const hostsToPrefetch = new Set();
+  if (mkHostGuess) hostsToPrefetch.add(normHost(mkHostGuess));
+  try {
+    const acctDomain = (acc?.acct && acc.acct.includes('@')) ? acc.acct.split('@')[1] : null;
+    if (acctDomain) hostsToPrefetch.add(normHost(acctDomain));
+  } catch {}
+  if (activeHost) hostsToPrefetch.add(normHost(activeHost));
+
+  if (Array.isArray(mkReactions) && mkReactions.length) {
+    for (const r of mkReactions) {
+      const q = (r?.qualified ?? r?.name ?? '').toString();
+      const p = parseQualifiedEmoji(q);
+      const h1 = (r && typeof r.host === 'string' && r.host !== '.' && r.host) ? r.host : null;
+      if (h1) hostsToPrefetch.add(normHost(h1));
+      if (p.host) hostsToPrefetch.add(normHost(p.host));
+    }
+  }
+
+  await Promise.all([...hostsToPrefetch].map(h => getMisskeyEmojis(h)));
+
+  const debugOn = new URL(location.href).searchParams.get('debug') === '1'
+               || new URL(location.href).searchParams.get('debug') === '2';
+  const debugRows = [];
+
+  let reactionsHTML = '';
+  if (Array.isArray(mkReactions)) {
+    const pieces = await Promise.all(mkReactions.map(async (r) => {
+      const q = (r?.qualified ?? r?.name ?? '').toString();
+      const p = parseQualifiedEmoji(q);
+      const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : (typeof r.count === 'number' ? '' : '');
+
+      if (r?.url) {
+        const alt = p.char ? p.char : (p.name ? `:${p.name}:` : (q || '❓'));
+        return `<span class="badge"><img src="${r.url}" alt="${alt}" loading="lazy" decoding="async" fetchpriority="low" />${cnt}</span>`;
+      }
+      if (p.char && !p.name) {
+        return `<span class="badge">${p.char} ${cnt}</span>`;
+      }
+      if (p.name) {
+        const candidates = new Set();
+        if (p.host) candidates.add(normHost(p.host));
+        for (const h of hostsToPrefetch) candidates.add(normHost(h));
+        const { url, tried, hit, match } = await resolveEmojiAcrossHostsWithDebug([...candidates], q);
+        if (url) {
+          if (debugOn) debugRows.push({key:q, tried, hit, match, url});
+          return `<span class="badge"><img src="${url}" alt=":${p.name}:" loading="lazy" decoding="async" fetchpriority="low" />${cnt}</span>`;
+        } else if (debugOn) {
+          debugRows.push({key:q, tried, hit:null, match:null, url:null});
+        }
+      }
+      const label = p.name ? `:${p.name}:` : (p.char ? p.char : (q || '❓'));
+      return `<span class="badge">${label} ${cnt}</span>`;
+    }));
+    reactionsHTML += pieces.join('');
+  }
+
+  const likeTargetId = base?.id || post?.id;
+  reactionsHTML += `
+    <button class="badge reply-toggle" data-id="${likeTargetId}" title="Show replies">💬 ${replies}</button>
+    <span class="badge">♺ ${boosts}</span>
+    <button class="badge ${isMine ? 'likers-toggle' : 'like-btn'}"
+            data-id="${likeTargetId}"
+            title="${isMine ? 'Show who liked' : 'Like'}">⭐ ${faves}</button>
+  `;
+
+  if (debugOn && debugRows.length) {
+    reactionsHTML += `<div class="meta" style="margin-top:6px;overflow:auto">
+      <table style="font-size:12px;border-collapse:collapse;border:1px dashed var(--border)">
+        <thead><tr><th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">key</th>
+                   <th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">hit</th>
+                   <th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">match</th>
+                   <th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">tried</th></tr></thead>
+        <tbody>
+          ${debugRows.map(r=>`<tr>
+             <td style="padding:4px 6px;border-top:1px dashed var(--border)">${escapeHTML(r.key||'')}</td>
+             <td style="padding:4px 6px;border-top:1px dashed var(--border)">${escapeHTML(r.hit||'')}</td>
+             <td style="padding:4px 6px;border-top:1px dashed var(--border)">${escapeHTML(r.match||'')}</td>
+             <td style="padding:4px 6px;border-top:1px dashed var(--border)">${(r.tried||[]).map(escapeHTML).join(', ')}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  }
+
+  return reactionsHTML;
+}
 
 async function renderPostHTML(post, opts) {
   const { source } = opts;
@@ -647,133 +815,34 @@ async function renderPostHTML(post, opts) {
     const boosts = base?.reblogs_count ?? 0;
     const replies = base?.replies_count ?? 0;
 
-    // ===== Misskey reactions from bridge =====
-    const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
-
-    function deriveMkReactionsFromRaw(debugObj) {
-      const out = [];
-      const raw = debugObj?.reactions_raw;
-      if (!raw || typeof raw !== 'object') return out;
-      for (const [key, cnt] of Object.entries(raw)) {
-        const parsed = parseQualifiedEmoji(key);
-        if (parsed.char) { out.push({ char: parsed.char, count: Number(cnt) || 0 }); continue; }
-        if (parsed.name) { out.push({ name: parsed.name, host: parsed.host || null, count: Number(cnt) || 0 }); }
-      }
-      return out;
-    }
-    let mkReactions =
-      (base && base._mkReactions) ||
-      (post && post._mkReactions) ||
-      deriveMkReactionsFromRaw(debugObj) || [];
-
-    // 후보 호스트 수집
-    const deriveHost = () => {
-      if (base && base._mkHost) return base._mkHost;
-      if (post && post._mkHost) return post._mkHost;
-      if (base && base._mkDebug?.host) return base._mkDebug.host;
-      if (post && post._mkDebug?.host) return post._mkDebug.host;
-      try { if (base && base._mkDebug?.apUri) return new URL(base._mkDebug.apUri).host; } catch {}
-      try { if (post && post._mkDebug?.apUri) return new URL(post._mkDebug.apUri).host; } catch {}
-      try { if (base?.url) return new URL(base.url).host; } catch {}
-      try { if (base?.uri) return new URL(base.uri).host; } catch {}
-      return null;
-    };
-    const mkHostGuess = deriveHost();
-
-    const hostsToPrefetch = new Set();
-    if (mkHostGuess) hostsToPrefetch.add(normHost(mkHostGuess));
-    try {
-      const acctDomain = (acc?.acct && acc.acct.includes('@')) ? acc.acct.split('@')[1] : null;
-      if (acctDomain) hostsToPrefetch.add(normHost(acctDomain));
-    } catch {}
-    if (activeHost) hostsToPrefetch.add(normHost(activeHost));
-
-    if (Array.isArray(mkReactions) && mkReactions.length) {
-      for (const r of mkReactions) {
-        const q = (r?.qualified ?? r?.name ?? '').toString();
-        const p = parseQualifiedEmoji(q);
-        const h1 = (r && typeof r.host === 'string' && r.host !== '.' && r.host) ? r.host : null;
-        if (h1) hostsToPrefetch.add(normHost(h1));
-        if (p.host) hostsToPrefetch.add(normHost(p.host));
-      }
-    }
-
-    // 성능: 호스트 목록 한번에 프리페치
-    await Promise.all([...hostsToPrefetch].map(h => getMisskeyEmojis(h)));
-
-    const debugRows = [];
     const likeTargetId = base?.id || post?.id;
 
-    // 리액션 HTML (병렬)
-    let reactionsHTML = '';
-    if (Array.isArray(mkReactions)) {
-      const pieces = await Promise.all(mkReactions.map(async (r) => {
-        const q = (r?.qualified ?? r?.name ?? '').toString();
-        const p = parseQualifiedEmoji(q); // { name, host, char }
-        const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : (typeof r.count === 'number' ? '' : '');
-
-        // 1) URL 직접 제공
-        if (r?.url) {
-          const alt = p.char ? p.char : (p.name ? `:${p.name}:` : (q || '❓'));
-          return `<span class="badge"><img src="${r.url}" alt="${alt}" />${cnt}</span>`;
-        }
-        // 2) 유니코드
-        if (p.char && !p.name) {
-          return `<span class="badge">${p.char} ${cnt}</span>`;
-        }
-        // 3) 커스텀 이모지: 여러 후보 호스트 순회
-        if (p.name) {
-          const candidates = new Set();
-          if (p.host) candidates.add(normHost(p.host));
-          for (const h of hostsToPrefetch) candidates.add(normHost(h));
-          const { url, tried, hit, match } = await resolveEmojiAcrossHostsWithDebug([...candidates], q);
-          if (url) {
-            if (debugOn) debugRows.push({key:q, tried, hit, match, url});
-            return `<span class="badge"><img src="${url}" alt=":${p.name}:" />${cnt}</span>`;
-          } else if (debugOn) {
-            debugRows.push({key:q, tried, hit:null, match:null, url:null});
-          }
-        }
-        // 4) 폴백 라벨
-        const label = p.name ? `:${p.name}:` : (p.char ? p.char : (q || '❓'));
-        return `<span class="badge">${label} ${cnt}</span>`;
-      }));
-      reactionsHTML += pieces.join('');
-    }
-
-    reactionsHTML += `
-      <button class="badge reply-toggle" data-id="${likeTargetId}" title="Show replies">💬 ${replies}</button>
-      <span class="badge">♺ ${boosts}</span>
-      <button class="badge ${isMine ? 'likers-toggle' : 'like-btn'}"
-              data-id="${likeTargetId}"
-              title="${isMine ? 'Show who liked' : 'Like'}">⭐ ${faves}</button>
-    `;
-
+    const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
     const debugOn = new URL(location.href).searchParams.get('debug') === '1'
-      || new URL(location.href).searchParams.get('debug') === '2';
+                 || new URL(location.href).searchParams.get('debug') === '2';
     const debugHTML = (debugOn && debugObj)
       ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(debugObj, null, 2))}</pre>`
       : '';
 
-    const debugTable = (debugOn && debugRows?.length)
-      ? `<div class="meta" style="margin-top:6px;overflow:auto">
-          <table style="font-size:12px;border-collapse:collapse;border:1px dashed var(--border)">
-            <thead><tr><th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">key</th>
-                       <th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">hit</th>
-                       <th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">match</th>
-                       <th style="padding:4px 6px;border-bottom:1px dashed var(--border);text-align:left">tried</th></tr></thead>
-            <tbody>
-              ${debugRows.map(r=>`<tr>
-                 <td style="padding:4px 6px;border-top:1px dashed var(--border)">${escapeHTML(r.key||'')}</td>
-                 <td style="padding:4px 6px;border-top:1px dashed var(--border)">${escapeHTML(r.hit||'')}</td>
-                 <td style="padding:4px 6px;border-top:1px dashed var(--border)">${escapeHTML(r.match||'')}</td>
-                 <td style="padding:4px 6px;border-top:1px dashed var(--border)">${(r.tried||[]).map(escapeHTML).join(', ')}</td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>` : '';
+    const card = (htmlHead, inner) => `
+      ${htmlHead}
+      ${mediaHTML}
+      <div class="reactions" id="rx-${likeTargetId}"></div>
+      ${debugHTML}
+      <div class="thread" data-for="${likeTargetId}" hidden></div>
+    `;
 
-    const likersBlock = `<div class="likers" data-for="${likeTargetId}" hidden></div>`;
+    // 리액션은 후순위로 채움
+    scheduleReactionTask(async () => {
+      try {
+        const container = document.getElementById(`rx-${likeTargetId}`);
+        if (!container) return;
+        const reactionsHTML = await buildReactionsHTMLForMasto({
+          base, post, isMine, faves, boosts, replies, activeHost
+        });
+        container.innerHTML = reactionsHTML;
+      } catch {}
+    });
 
     if (isReblog) {
       const boosterName = booster?.display_name || booster?.username || '';
@@ -781,50 +850,41 @@ async function renderPostHTML(post, opts) {
       const boosterAvatar = booster?.avatar_static || booster?.avatar || '';
 
       return `
-        <article class="post reblog">
+        <article class="post reblog" data-post-id="${likeTargetId}">
           <div class="reblog-banner">
             <span class="icon">↻</span>
             <span class="user-chip">
-              <img class="avatar-mini" src="${boosterAvatar}" alt="" loading="lazy">
+              <img class="avatar-mini" src="${boosterAvatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">
               <strong>${escapeHTML(boosterName)}</strong> <span class="meta">${escapeHTML(boosterHandle)}</span>
             </span>
             <span class="meta">님이 부스트했습니다</span>
           </div>
           <div class="reblog-inner">
             <div class="post-head">
-              <img class="avatar" src="${avatarURL}" alt="" loading="lazy">
+              <img class="avatar" src="${avatarURL}" alt="" loading="lazy" decoding="async" fetchpriority="low">
               <div>
                 <div class="name">${renderEmojisToHTML(escapeHTML(displayName), mastoEmojiMap)} <span class="meta">${escapeHTML(handle)}</span></div>
                 <div class="meta">${new Date(createdAt).toLocaleString()}</div>
               </div>
             </div>
             <div class="content">${contentHTML}</div>
-            ${mediaHTML}
-            <div class="reactions">${reactionsHTML}</div>
-            ${debugHTML}
-            ${debugTable}
+            ${card('', '')}
           </div>
-          <div class="thread" data-for="${likeTargetId}" hidden></div>
         </article>
       `;
     }
 
     return `
-      <article class="post">
+      <article class="post" data-post-id="${likeTargetId}">
         <div class="post-head">
-          <img class="avatar" src="${avatarURL}" alt="" loading="lazy">
+          <img class="avatar" src="${avatarURL}" alt="" loading="lazy" decoding="async" fetchpriority="low">
           <div>
             <div class="name">${renderEmojisToHTML(escapeHTML(displayName), mastoEmojiMap)} <span class="meta">${escapeHTML(handle)}</span></div>
             <div class="meta">${new Date(createdAt).toLocaleString()}</div>
           </div>
         </div>
         <div class="content">${contentHTML}</div>
-        ${mediaHTML}
-        <div class="reactions">${reactionsHTML}</div>
-        ${likersBlock}
-        ${debugHTML}
-        ${debugTable}
-        <div class="thread" data-for="${likeTargetId}" hidden></div>
+        ${card('', '')}
       </article>
     `;
   }
@@ -869,7 +929,7 @@ async function renderPostHTML(post, opts) {
           const idx = emojiIndexCache.get(normHost(postHost));
           em = idx?.byExact.get(parsed.name) || idx?.byLower.get(String(parsed.name).toLowerCase());
         }
-        if (em?.url) rxBadges.push(`<span class="badge"><img src="${em.url}" alt=":${parsed.name}:" />${count}</span>`);
+        if (em?.url) rxBadges.push(`<span class="badge"><img src="${em.url}" alt=":${parsed.name}:" loading="lazy" decoding="async" fetchpriority="low" />${count}</span>`);
         else rxBadges.push(`<span class="badge">:${parsed.name}: ${count}</span>`);
       }
     }
@@ -877,7 +937,7 @@ async function renderPostHTML(post, opts) {
     return `
       <article class="post">
         <div class="post-head">
-          <img class="avatar" src="${avatarURL}" alt="" loading="lazy">
+          <img class="avatar" src="${avatarURL}" alt="" loading="lazy" decoding="async" fetchpriority="low">
           <div>
             <div class="name">${renderEmojisToHTML(escapeHTML(displayName), emojiList)} <span class="meta">${escapeHTML(handle)}</span></div>
             <div class="meta">${new Date(createdAt).toLocaleString()}</div>
@@ -896,6 +956,8 @@ async function renderPostHTML(post, opts) {
 /* =========================
    Timeline state & loaders
    ========================= */
+let pageAborter = null;
+
 async function loadMe() {
   const preferMasto = hasMastoCookies();
   const preferMisskey = hasMisskeyCookies();
@@ -975,6 +1037,10 @@ async function loadPage(initial=false) {
   if (isLoading || !source) return;
   isLoading = true;
 
+  // 이전 요청 취소
+  if (pageAborter) pageAborter.abort();
+  pageAborter = new AbortController();
+
   try {
     const path =
       mode === 'fav'
@@ -994,7 +1060,7 @@ async function loadPage(initial=false) {
       u.searchParams.set('debug', '1');
     }
 
-    const data = await jfetch(u.toString());
+    const data = await jfetch(u.toString(), { signal: pageAborter.signal });
     if (mode === 'home') {
       const top = Array.isArray(data?.items) ? data.items[0] : Array.isArray(data) ? data[0] : null;
       lastTopId = top ? (top?.reblog?.id ?? top?.id ?? null) : lastTopId;
@@ -1013,7 +1079,7 @@ async function loadPage(initial=false) {
     });
     feedEl.appendChild(frag);
 
-    items.forEach(async (post, i) => {
+    await Promise.all(items.map(async (post, i) => {
       try {
         const html = await renderPostHTML(post, { source });
         const wrapper = document.createElement('div');
@@ -1022,13 +1088,15 @@ async function loadPage(initial=false) {
       } catch (e) {
         placeholders[i].innerHTML = '<div class="meta">Failed to render</div>';
       }
-    });
+    }));
 
     cursor = (source === 'masto')
       ? (data?.next_max_id || (rawItems.length ? rawItems[rawItems.length-1]?.id : null))
       : (data?.next || (rawItems.length ? rawItems[rawItems.length-1]?.id : null));
   } catch (e) {
-    if (e?.status === 401) {
+    if (e?.name === 'AbortError') {
+      // 최신 요청이 이전 요청을 취소함: 조용히 반환
+    } else if (e?.status === 401) {
       if (source === 'misskey' && hasMastoCookies()) {
         console.warn('Misskey 401: Mastodon으로 자동 전환합니다.');
         source = 'masto'; cursor = null; feedEl.innerHTML = '';
@@ -1050,8 +1118,9 @@ async function autofillIfNeeded(maxLoops = 3) {
     const sentinel = document.getElementById('sentinel');
     if (!sentinel) break;
     const rect = sentinel.getBoundingClientRect();
-    if (rect.top < window.innerHeight + 200) {
+    if (rect.top < window.innerHeight + 400) {
       await loadPage();
+      await new Promise(r => setTimeout(r, 0)); // 메인스레드 양보
     } else {
       break;
     }
@@ -1282,12 +1351,18 @@ document.addEventListener('click', async (ev) => {
 
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
-// infinite scroll
+// infinite scroll (루트 마진 상향 + 쿨다운)
+let ioLock = false;
 io = new IntersectionObserver(async (entries) => {
   for (const e of entries) {
-    if (e.isIntersecting) await loadPage();
+    if (e.isIntersecting) {
+      if (ioLock) return;
+      ioLock = true;
+      await loadPage();
+      setTimeout(() => { ioLock = false; }, 150);
+    }
   }
-}, { rootMargin: '600px' });
+}, { rootMargin: '1200px' });
 io.observe(document.getElementById('sentinel'));
 
 // init
