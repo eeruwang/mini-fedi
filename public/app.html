@@ -399,9 +399,30 @@ function buildMastoEmojiMap(status) {
 }
 
 /* =========================
-   Emoji rendering
+   Emoji helpers (NEW)
    ========================= */
 function escapeRegExp(s='') { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function parseQualifiedEmoji(raw = '') {
+  // ':name@host:' | ':name:' | 'name@host' | 'name' | '❤'
+  let s = String(raw).trim();
+  if (!s) return { name: null, host: null, char: null };
+
+  // 유니코드 단일 리액션(이모지)
+  if (!s.includes(':') && !s.includes('@') && s.length <= 2 && /\p{Extended_Pictographic}/u.test(s)) {
+    return { name: null, host: null, char: s };
+  }
+  s = s.replace(/^:/, '').replace(/:$/, '');
+  const at = s.indexOf('@');
+  if (at > 0) return { name: s.slice(0, at), host: s.slice(at + 1), char: null };
+  return { name: s, host: null, char: null };
+}
+
+function normalizeEmojiName(raw='') {
+  const { name, char } = parseQualifiedEmoji(raw);
+  return char ? null : (name || null);
+}
+
 function renderEmojisToHTML(textOrHTML, emojiList) {
   if (!textOrHTML || !emojiList?.length) return textOrHTML || '';
   let html = String(textOrHTML);
@@ -415,19 +436,17 @@ function renderEmojisToHTML(textOrHTML, emojiList) {
   }
   return html;
 }
-function normalizeEmojiName(raw='') {
-  // ":foo:" | "foo" 둘 다 "foo"로
-  return String(raw).replace(/^:/, '').replace(/:$/, '');
-}
 
-async function resolveMisskeyEmojiURLByHost(host, name) {
+async function resolveMisskeyEmojiURLByHost(hostCandidate, nameOrQualified) {
+  const parsed = parseQualifiedEmoji(nameOrQualified);
+  if (parsed.char) return null; // 유니코드엔 URL 없음
+  const name = parsed.name;
+  const host = parsed.host || hostCandidate;
   if (!host || !name) return null;
   const list = await getMisskeyEmojis(host);
-  const n = normalizeEmojiName(name);
-  const found = list.find(e => e?.name === n);
+  const found = list.find(e => e?.name === name);
   return found?.url || null;
 }
-
 
 function escapeHTML(s='') {
   return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
@@ -557,10 +576,24 @@ async function renderPostHTML(post, opts) {
     const replies = base?.replies_count ?? 0;
 
     // ===== Misskey reactions (from bridge)
-    const mkReactions = (base && base._mkReactions) || (post && post._mkReactions) || null;
+    const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
+    function deriveMkReactionsFromRaw(debugObj) {
+      const out = [];
+      const raw = debugObj?.reactions_raw;
+      if (!raw || typeof raw !== 'object') return out;
+      for (const [key, cnt] of Object.entries(raw)) {
+        const parsed = parseQualifiedEmoji(key);
+        if (parsed.char) { out.push({ char: parsed.char, count: Number(cnt) || 0 }); continue; }
+        if (parsed.name) { out.push({ name: parsed.name, host: parsed.host || null, count: Number(cnt) || 0 }); }
+      }
+      return out;
+    }
+    let mkReactions =
+      (base && base._mkReactions) ||
+      (post && post._mkReactions) ||
+      deriveMkReactionsFromRaw(debugObj) || [];
 
-    // 이모지 맵 프리페치: 원글 호스트 + 리액션별 host
-    let mkHostGuess = null;
+    // 이모지 맵 프리페치: 원글 호스트 + 리액션별 host (+ reactions_raw host)
     const deriveHost = () => {
       if (base && base._mkHost) return base._mkHost;
       if (post && post._mkHost) return post._mkHost;
@@ -570,61 +603,55 @@ async function renderPostHTML(post, opts) {
       try { if (post && post._mkDebug?.apUri) return new URL(post._mkDebug.apUri).host; } catch {}
       return null;
     };
-    mkHostGuess = deriveHost();
+    const mkHostGuess = deriveHost();
 
     const hostsToPrefetch = new Set();
     if (mkHostGuess) hostsToPrefetch.add(mkHostGuess);
-    if (Array.isArray(mkReactions)) {
+    if (Array.isArray(mkReactions) && mkReactions.length) {
       for (const r of mkReactions) {
         const h = (r && typeof r.host === 'string' && r.host !== '.' && r.host) ? r.host : null;
         if (h) hostsToPrefetch.add(h);
       }
+    } else if (debugObj?.reactions_raw) {
+      for (const key of Object.keys(debugObj.reactions_raw)) {
+        const { host } = parseQualifiedEmoji(key);
+        if (host) hostsToPrefetch.add(host);
+      }
     }
     await Promise.all([...hostsToPrefetch].map(h => getMisskeyEmojis(h)));
 
-    function resolveMkUrlBy(name, hostCandidate) {
-      const h = (hostCandidate && hostCandidate !== '.') ? hostCandidate : mkHostGuess;
-      if (!h) return null;
-      const list = emojiMapCache.get(h) || [];
-      const em = list.find(e => e?.name === name);
-      return em?.url || null;
+    const mkReHostFallback = mkHostGuess;
+
+    function resolveMkUrlBy(nameOrQualified, hostCandidate) {
+      return resolveMisskeyEmojiURLByHost(hostCandidate, nameOrQualified);
     }
 
     // 리액션 HTML
     let reactionsHTML = '';
     if (Array.isArray(mkReactions)) {
-      // 각 리액션별로 URL을 비동기 해상 (r.host 우선, 없으면 글 추정 호스트)
-      const mkReHostFallback = (() => {
-        // 기존 deriveHost 로직 재사용
-        if (base && base._mkHost) return base._mkHost;
-        if (post && post._mkHost) return post._mkHost;
-        if (base && base._mkDebug?.host) return base._mkDebug.host;
-        if (post && post._mkDebug?.host) return post._mkDebug.host;
-        try { if (base && base._mkDebug?.apUri) return new URL(base._mkDebug.apUri).host; } catch {}
-        try { if (post && post._mkDebug?.apUri) return new URL(post._mkDebug.apUri).host; } catch {}
-        return null;
-      })();
-
       const pieces = await Promise.all(mkReactions.map(async (r) => {
-        const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : '';
-        // 1) 이미 URL이 있으면 그대로
+        const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : (typeof r.count === 'number' ? '' : '');
+        // 1) URL이 있으면 그대로
         if (r?.url) {
-          return `<span class="badge"><img src="${r.url}" alt=":${r.name || ''}:" />${cnt}</span>`;
+          const alt = r?.name ? `:${normalizeEmojiName(r.name) || ''}:` : (r?.char || '');
+          return `<span class="badge"><img src="${r.url}" alt="${alt}" />${cnt}</span>`;
         }
-        // 2) 유니코드(❤️ 같은)면 그대로 문자로
+        // 2) 유니코드
         if (r?.char && !r?.name) {
           return `<span class="badge">${r.char} ${cnt}</span>`;
         }
-        // 3) 커스텀 이모지: r.host 우선 → 없으면 글 호스트로 시도
+        // 3) 커스텀 이모지: host 우선 → 없으면 글 추정 호스트
         const host = r?.host || mkReHostFallback;
-        if (host && r?.name) {
-          const url = await resolveMisskeyEmojiURLByHost(host, r.name);
+        if (host && (r?.name || r?.qualified)) {
+          const key = r?.qualified || r?.name;
+          const url = await resolveMkUrlBy(key, host);
           if (url) {
-            return `<span class="badge"><img src="${url}" alt=":${normalizeEmojiName(r.name)}:" />${cnt}</span>`;
+            const alt = `:${normalizeEmojiName(key) || ''}:`;
+            return `<span class="badge"><img src="${url}" alt="${alt}" />${cnt}</span>`;
           }
         }
-        // 4) 그래도 못 찾으면 ":name:" 표기로 폴백
-        const label = r?.name ? `:${normalizeEmojiName(r.name)}:` : (r?.char || '');
+        // 4) 폴백 텍스트
+        const label = r?.name ? `:${normalizeEmojiName(r.name) || ''}:` : (r?.char || '');
         return `<span class="badge">${label} ${cnt}</span>`;
       }));
 
@@ -642,7 +669,6 @@ async function renderPostHTML(post, opts) {
 
     const debugOn = new URL(location.href).searchParams.get('debug') === '1'
       || new URL(location.href).searchParams.get('debug') === '2';
-    const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
     const debugHTML = (debugOn && debugObj)
       ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(debugObj, null, 2))}</pre>`
       : '';
@@ -720,10 +746,14 @@ async function renderPostHTML(post, opts) {
     if (rx && typeof rx === 'object') {
       for (const key of Object.keys(rx)) {
         const count = rx[key];
-        const name = key.replace(/^:/, '').replace(/:$/, '');
-        const em = emojiList.find(e => e.name === name);
-        if (em?.url) rxBadges.push(`<span class="badge"><img src="${em.url}" alt=":${name}:" />${count}</span>`);
-        else rxBadges.push(`<span class="badge">:${name}: ${count}</span>`);
+        const parsed = parseQualifiedEmoji(key);
+        if (parsed.char) {
+          rxBadges.push(`<span class="badge">${parsed.char} ${count}</span>`);
+          continue;
+        }
+        const em = emojiList.find(e => e.name === (parsed.name || ''));
+        if (em?.url) rxBadges.push(`<span class="badge"><img src="${em.url}" alt=":${parsed.name}:" />${count}</span>`);
+        else rxBadges.push(`<span class="badge">:${parsed.name}: ${count}</span>`);
       }
     }
 
