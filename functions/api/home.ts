@@ -59,54 +59,57 @@ function limiter(concurrency: number) {
   };
 }
 
+// ---------- normalize helpers ----------
+function normalizeName(s: string) {
+  return String(s || "").replace(/^:|:$/g, "").trim().toLowerCase();
+}
+function normalizeHost(h: string | null | undefined) {
+  return (h || "").trim().toLowerCase() || null;
+}
+function variantsOfName(n: string) {
+  const base = normalizeName(n);
+  const underscore = base.replace(/-/g, "_");
+  const hyphen = base.replace(/_/g, "-");
+  return Array.from(new Set([base, underscore, hyphen]));
+}
+
 // ---------- Misskey helpers (KV + memory cached) ----------
-const metaMem = new Map<string, any>(); // host -> meta
+const metaMem = new Map<string, any>(); // host(lower) -> meta(with indexes)
 
-/**
- * Misskey 별칭(알리아스) → 실제 이모지로 해석
- * - meta.reactionEmojis / meta.reactions / meta.reactionsConfig?.reactions 등 포크 차이를 모두 탐색
- * - 값이 ":name:" / ":name@host:" → 커스텀
- * - 값이 "❤️" 같은 유니코드 → 유니코드
- */
+// 별칭(알리아스) 조회: meta._aliasByKey(Map)에서 정규화된 키로 탐색
 function resolveAliasFromMeta(meta: any, key: string) {
-  const maps = [
-    meta?.reactionEmojis,               // Misskey
-    meta?.reactions,                    // 일부 포크
-    meta?.reactionsConfig?.reactions,   // 또 다른 포크
-  ].find((m) => m && typeof m === "object") as Record<string, unknown> | undefined;
-
-  if (!maps) return null;
-  const v = maps[key];
-  if (typeof v !== "string") return null;
-
-  const s = v.trim();
-  if (/^:.*:$/.test(s)) {
-    const nameHost = s.slice(1, -1);
-    const [name, host] = nameHost.split("@");
-    return { kind: "custom" as const, name, host: host || null };
+  const idx = meta?._aliasByKey as Map<string, any> | undefined;
+  if (!idx) return null;
+  // key 의 여러 변형으로 조회 (콜론 제거/소문자/언더스코어/하이픈)
+  for (const v of variantsOfName(key)) {
+    const hit = idx.get(v);
+    if (hit) return hit;
   }
-  return { kind: "unicode" as const, char: s };
+  return null;
 }
 
 // 원격 호스트의 이모지 URL 조회: meta를 가져와 name 매칭
 async function getEmojiUrlFromHost(env: Env, host: string, name: string): Promise<string | null> {
-  const m = await getMisskeyMeta(env, host).catch(() => null);
+  const m = await getMisskeyMeta(env, normalizeHost(host)!).catch(() => null);
   if (!m) return null;
-  return resolveEmojiUrlFromMeta(m, name);
+  return resolveEmojiUrlFromMeta(m, normalizeName(name));
 }
 
-
 async function getMisskeyMeta(env: Env, host: string) {
+  host = normalizeHost(host)!;
   if (metaMem.has(host)) return metaMem.get(host);
+
   const kvKey = `mkmeta:${host}`;
   const cached = await env.FEDIOAUTH_KV.get(kvKey);
   if (cached) {
     try {
       const v = JSON.parse(cached);
-      metaMem.set(host, v);
-      return v;
+      const withIndex = buildMetaIndex(v);
+      metaMem.set(host, withIndex);
+      return withIndex;
     } catch {}
   }
+
   const res = await fetchWithTimeout(
     `https://${host}/api/meta`,
     {
@@ -117,14 +120,17 @@ async function getMisskeyMeta(env: Env, host: string) {
     1500,
   );
   if (!res.ok) return null;
+
   const meta = await res.json();
-  metaMem.set(host, meta);
-  await env.FEDIOAUTH_KV.put(`mkmeta:${host.toLowerCase()}`, JSON.stringify(meta), { expirationTtl: 86400 });
-  return meta;
+  const withIndex = buildMetaIndex(meta);
+  metaMem.set(host, withIndex);
+  await env.FEDIOAUTH_KV.put(kvKey, JSON.stringify(meta), { expirationTtl: 86400 });
+  return withIndex;
 }
 
 // ap/show (타임아웃 + KV 캐시)
 async function getApShow(env: Env, host: string, apUri: string) {
+  host = normalizeHost(host)!;
   const digest = await sha256Hex(apUri);
   const key = `mk:note:${host}:${digest}`;
   const cached = await env.FEDIOAUTH_KV.get(key);
@@ -151,34 +157,93 @@ async function getApShow(env: Env, host: string, apUri: string) {
   return { status: 200, data };
 }
 
+// 콜론 유무/패턴에 따라 custom/unicode 판단
 function parseMkReactionKey(key: string) {
-  if (!key.includes(":")) return { kind: "unicode" as const, name: key, host: null };
-  const trimmed = key.replace(/^:/, "").replace(/:$/, "");
-  const [name, host] = trimmed.split("@");
-  return { kind: "custom" as const, name, host: host || null };
+  const raw = String(key || "");
+  // :name: / :name@host:
+  if (/^:.*:$/.test(raw)) {
+    const body = raw.slice(1, -1);
+    const [n, h] = body.split("@");
+    return { kind: "custom" as const, name: normalizeName(n), host: normalizeHost(h) };
+  }
+  const trimmed = raw.trim();
+  // 콜론이 없어도 shortcode 패턴이면 custom 취급 (예: blobcat_siwasiwameltcry 또는 name@host)
+  if (/^[a-z0-9._:-]+(?:@[a-z0-9.-]+)?$/i.test(trimmed)) {
+    const [n, h] = trimmed.split("@");
+    return { kind: "custom" as const, name: normalizeName(n), host: normalizeHost(h) };
+  }
+  // 그 외는 유니코드로 간주
+  return { kind: "unicode" as const, name: trimmed, host: null };
 }
 
-function normalizeName(s: string) {
-  return String(s || "").replace(/^:|:$/g, "").trim().toLowerCase();
-}
-function resolveEmojiUrlFromMeta(meta: any, name: string) {
+// --- meta indexers ---
+function buildMetaIndex(metaRaw: any) {
+  const meta = metaRaw || {};
+
+  // 1) 이모지 이름 → URL (여러 변형으로 인덱싱)
+  const emojiByName = new Map<string, string>();
   const list = Array.isArray(meta?.emojis) ? meta.emojis : [];
-  const n = normalizeName(name);
-  const found = list.find((e: any) => normalizeName(e?.name) === n);
-  return found?.url || found?.uri || found?.publicUrl || null;
+  for (const e of list) {
+    const url = e?.url || e?.uri || e?.publicUrl || null;
+    if (!url) continue;
+    for (const v of variantsOfName(e?.name || "")) {
+      emojiByName.set(v, url);
+    }
+  }
+
+  // 2) 별칭키 → 타입(custom/unicode)
+  const maps = [
+    meta?.reactionEmojis,
+    meta?.reactions,
+    meta?.reactionsConfig?.reactions,
+  ].find((m) => m && typeof m === "object") as Record<string, unknown> | undefined;
+
+  const aliasByKey = new Map<string, { kind: "custom" | "unicode"; name?: string; host?: string; char?: string }>();
+  if (maps) {
+    for (const [k, val] of Object.entries(maps)) {
+      if (typeof val !== "string") continue;
+      const s = val.trim();
+      const normKeys = new Set<string>();
+      // 키 자체도 여러 변형으로 인덱싱 (콜론제거/소문자/언더스코어↔하이픈)
+      for (const vk of variantsOfName(k)) normKeys.add(vk);
+      for (const nk of normKeys) {
+        if (/^:.*:$/.test(s)) {
+          const body = s.slice(1, -1);
+          const [name, host] = body.split("@");
+          aliasByKey.set(nk, { kind: "custom", name: normalizeName(name), host: normalizeHost(host) || undefined });
+        } else {
+          aliasByKey.set(nk, { kind: "unicode", char: s });
+        }
+      }
+    }
+  }
+
+  (meta as any)._emojiByName = emojiByName;
+  (meta as any)._aliasByKey = aliasByKey;
+  return meta;
+}
+
+function resolveEmojiUrlFromMeta(meta: any, name: string) {
+  const idx = meta?._emojiByName as Map<string, string> | undefined;
+  if (!idx) return null;
+  for (const v of variantsOfName(name)) {
+    const url = idx.get(v);
+    if (url) return url;
+  }
+  return null;
 }
 
 function resolveEmojiUrlFromApTag(apObject: any, name: string): string | null {
+  const target = normalizeName(name);
   const tags = Array.isArray(apObject?.object?.tag)
     ? apObject.object.tag
     : Array.isArray(apObject?.tag)
     ? apObject.tag
     : [];
   for (const t of tags) {
-    const tname =
-      typeof t?.name === "string" ? t.name.replace(/^:/, "").replace(/:$/, "") : "";
+    const tname = typeof t?.name === "string" ? normalizeName(t.name) : "";
     const url = t?.icon?.url || t?.icon?.href || t?.icon;
-    if (t?.type === "Emoji" && tname === name && typeof url === "string") return url;
+    if (t?.type === "Emoji" && tname === target && typeof url === "string") return url;
   }
   return null;
 }
@@ -194,6 +259,7 @@ function extractMisskeyNoteIdFromApUri(apUri: string): string | null {
 }
 
 async function getNotesShow(env: Env, host: string, noteId: string) {
+  host = normalizeHost(host)!;
   const key = `mk:note:byid:${host}:${noteId}`;
   const cached = await env.FEDIOAUTH_KV.get(key);
   if (cached) {
@@ -279,19 +345,21 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
         continue;
       }
       const noteId = extractMisskeyNoteIdFromApUri(apUri);
+      const host = new URL(apUri).host.toLowerCase();
       if (!noteId) {
         if (debug) st._mkDebug = {
           stage: "skip_non_misskey_shape",
           apUri,
-          host: new URL(apUri).host,
+          host,
         };
         continue;
       }
-      allJobs.push({ st, apUri, host: new URL(apUri).host, noteId });
+      allJobs.push({ st, apUri, host, noteId });
     }
 
     const jobs = allJobs.slice(0, mergeLimit);
 
+    // 해당 호스트들의 /api/meta 미리 warm-up
     const uniqueHosts = Array.from(new Set(jobs.map((j) => j.host)));
     await Promise.all(uniqueHosts.map((h) => getMisskeyMeta(env, h).catch(() => null)));
 
@@ -350,37 +418,47 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
               const count = (reactions as any)[k] ?? 0;
               if (!count) continue;
 
-              let kindInfo = parseMkReactionKey(k);
+              // 0) 원본/정규화
+              const keyNorm = normalizeName(k);
+              let kindInfo = parseMkReactionKey(k); // 내부에서 정규화 적용
+              if (kindInfo.kind === "custom") {
+                kindInfo = { kind: "custom", name: normalizeName(kindInfo.name), host: normalizeHost(kindInfo.host) };
+              } else {
+                kindInfo = { kind: "unicode", name: keyNorm, host: null };
+              }
 
-              // 별칭(알리아스) 탐색: meta에 'blobcataww2' -> ':blobcataww2@blob.cat:' 같은 매핑이 있을 수 있음
-              const alias = meta ? resolveAliasFromMeta(meta, normalizeName(k)) : null;
-              // alias 결과가 커스텀이고 host가 있으면, kindInfo를 그 호스트로 보정
+              // 1) 별칭(알리아스) 우선
+              const alias = meta ? resolveAliasFromMeta(meta, keyNorm) : null;
               if (alias?.kind === "custom") {
-                kindInfo = { kind: "custom", name: alias.name, host: alias.host || kindInfo.host };
+                kindInfo = {
+                  kind: "custom",
+                  name: normalizeName(alias.name!),
+                  host: normalizeHost(alias.host) || kindInfo.host,
+                };
               } else if (alias?.kind === "unicode") {
-                // 별칭이 유니코드로 직접 매핑되는 경우
-                out.push({ name: alias.char, url: null, count, char: alias.char });
+                out.push({ name: alias.char!, url: null, count, char: alias.char! });
                 continue;
               }
-              // 🔧 콜론이 없어도 메타에 같은 이름이 있으면 custom로 간주
-              if (kindInfo.kind === "unicode" && meta && resolveEmojiUrlFromMeta(meta, kindInfo.name)) {
-                kindInfo = { kind: "custom", name: kindInfo.name, host: null };
+
+              // 2) 콜론 없는 키도 메타에 있으면 custom 취급
+              if (kindInfo.kind === "unicode" && meta && resolveEmojiUrlFromMeta(meta, keyNorm)) {
+                kindInfo = { kind: "custom", name: keyNorm, host: null };
               }
 
               if (kindInfo.kind === "unicode") {
                 // 진짜 유니코드(커스텀 아님)
                 out.push({ name: kindInfo.name, url: null, count, char: kindInfo.name });
               } else {
-                const name = kindInfo.name;
+                const name = normalizeName(kindInfo.name);
                 // 1) 원글 호스트 meta
                 let url = meta ? resolveEmojiUrlFromMeta(meta, name) : null;
 
-                // 2) alias에서 원격 호스트가 밝혀진 경우 그 호스트 meta도 조회
+                // 2) 별칭/키에 원격 호스트가 있으면 그 호스트 meta에서 찾기
                 if (!url && kindInfo.host) {
-                  url = await getEmojiUrlFromHost(env, kindInfo.host.toLowerCase(), name);
+                  url = await getEmojiUrlFromHost(env, kindInfo.host, name);
                 }
 
-                // 3) AP object 태그에서도 마지막으로 시도
+                // 3) AP 태그로 최후의 수단
                 if (!url) {
                   url = resolveEmojiUrlFromApTag(obj, name);
                 }
@@ -389,10 +467,9 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
               }
             }
 
-
             if (out.length) {
               st._mkReactions = out;
-              st._mkHost = job.host;
+              st._mkHost = normalizeHost(job.host);
               mergedCount++;
               if (debug)
                 st._mkDebug = {
