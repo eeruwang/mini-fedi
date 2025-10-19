@@ -399,22 +399,22 @@ function buildMastoEmojiMap(status) {
 }
 
 /* =========================
-   Emoji helpers (NEW)
+   Emoji helpers
    ========================= */
 function escapeRegExp(s='') { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+// ':name@host:' | ':name:' | 'name@host' | 'name' | '❤'
 function parseQualifiedEmoji(raw = '') {
-  // ':name@host:' | ':name:' | 'name@host' | 'name' | '❤'
   let s = String(raw).trim();
   if (!s) return { name: null, host: null, char: null };
 
-  // 유니코드 단일 리액션(이모지)
+  // 유니코드 단일 이모지(간단 판정)
   if (!s.includes(':') && !s.includes('@') && s.length <= 2 && /\p{Extended_Pictographic}/u.test(s)) {
     return { name: null, host: null, char: s };
   }
   s = s.replace(/^:/, '').replace(/:$/, '');
   const at = s.indexOf('@');
-  if (at > 0) return { name: s.slice(0, at), host: s.slice(at + 1), char: null };
+  if (at > 0) return { name: s.slice(0, at), host: s.slice(at + 1).replace(/^https?:\/\//, '').replace(/\/+$/, ''), char: null };
   return { name: s, host: null, char: null };
 }
 
@@ -577,6 +577,7 @@ async function renderPostHTML(post, opts) {
 
     // ===== Misskey reactions (from bridge)
     const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
+
     function deriveMkReactionsFromRaw(debugObj) {
       const out = [];
       const raw = debugObj?.reactions_raw;
@@ -593,7 +594,7 @@ async function renderPostHTML(post, opts) {
       (post && post._mkReactions) ||
       deriveMkReactionsFromRaw(debugObj) || [];
 
-    // 이모지 맵 프리페치: 원글 호스트 + 리액션별 host (+ reactions_raw host)
+    // 이모지 맵 프리페치: 원글 호스트 + 리액션별 host + reactions_raw 내 host
     const deriveHost = () => {
       if (base && base._mkHost) return base._mkHost;
       if (post && post._mkHost) return post._mkHost;
@@ -607,59 +608,48 @@ async function renderPostHTML(post, opts) {
 
     const hostsToPrefetch = new Set();
     if (mkHostGuess) hostsToPrefetch.add(mkHostGuess);
+
     if (Array.isArray(mkReactions) && mkReactions.length) {
       for (const r of mkReactions) {
-        // r.host
         const h1 = (r && typeof r.host === 'string' && r.host !== '.' && r.host) ? r.host : null;
         if (h1) hostsToPrefetch.add(h1);
-
-        // r.qualified 또는 r.name 안에 포함된 host(name@host)도 파싱해서 추가
         const q = (r?.qualified ?? r?.name ?? '').toString();
         const p = parseQualifiedEmoji(q);
         if (p.host) hostsToPrefetch.add(p.host);
       }
     }
-
-    } else if (debugObj?.reactions_raw) {
+    if (debugObj?.reactions_raw && typeof debugObj.reactions_raw === 'object') {
       for (const key of Object.keys(debugObj.reactions_raw)) {
-        const { host } = parseQualifiedEmoji(key);
-        if (host) hostsToPrefetch.add(host);
+        const p = parseQualifiedEmoji(key);
+        if (p.host) hostsToPrefetch.add(p.host);
       }
     }
+
     await Promise.all([...hostsToPrefetch].map(h => getMisskeyEmojis(h)));
 
     const mkReHostFallback = mkHostGuess;
-
-    function resolveMkUrlBy(nameOrQualified, hostCandidate) {
-      return resolveMisskeyEmojiURLByHost(hostCandidate, nameOrQualified);
-    }
 
     // 리액션 HTML
     let reactionsHTML = '';
     if (Array.isArray(mkReactions)) {
       const pieces = await Promise.all(mkReactions.map(async (r) => {
-        // 안전한 원본 키 확보
         const q = (r?.qualified ?? r?.name ?? '').toString();
         const p = parseQualifiedEmoji(q); // { name, host, char }
-
         const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : (typeof r.count === 'number' ? '' : '');
 
-        // 1) URL이 이미 있으면 그대로
+        // 1) URL 제공됨
         if (r?.url) {
           const alt = p.char ? p.char : (p.name ? `:${p.name}:` : (q || '❓'));
           return `<span class="badge"><img src="${r.url}" alt="${alt}" />${cnt}</span>`;
         }
-
-        // 2) 유니코드 리액션이면 바로 출력
+        // 2) 유니코드
         if (p.char && !p.name) {
           return `<span class="badge">${p.char} ${cnt}</span>`;
         }
-
-        // 3) 커스텀 이모지 URL 해상 (host 우선순위: q의 host → r.host → 글 추정 호스트)
+        // 3) 커스텀 이모지 해상
         const host = (p.host || r?.host || mkReHostFallback || null);
         if (host && p.name) {
           let url = await resolveMisskeyEmojiURLByHost(host, q);
-          // 혹시 실패했는데 q에 host가 있었고 캐시가 아직 비었을 수 있으니, 한 번 더 강제 프리페치 후 재조회
           if (!url) {
             await getMisskeyEmojis(host).catch(() => {});
             url = await resolveMisskeyEmojiURLByHost(host, q);
@@ -668,19 +658,12 @@ async function renderPostHTML(post, opts) {
             return `<span class="badge"><img src="${url}" alt=":${p.name}:" />${cnt}</span>`;
           }
         }
-
-        // 4) 마지막 폴백: 라벨을 절대로 빈 문자열로 만들지 말 것
-        //    p.name이 있으면 :name: / 없고 유니코드면 char / 그것도 아니면 원본 q / 정말 없으면 ❓
-        const label =
-          p.name ? `:${p.name}:` :
-          (p.char ? p.char : (q || '❓'));
-
+        // 4) 폴백 라벨
+        const label = p.name ? `:${p.name}:` : (p.char ? p.char : (q || '❓'));
         return `<span class="badge">${label} ${cnt}</span>`;
       }));
-
       reactionsHTML += pieces.join('');
     }
-
 
     const likeTargetId = base?.id || post?.id;
     reactionsHTML += `
