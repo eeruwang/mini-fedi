@@ -415,6 +415,20 @@ function renderEmojisToHTML(textOrHTML, emojiList) {
   }
   return html;
 }
+function normalizeEmojiName(raw='') {
+  // ":foo:" | "foo" 둘 다 "foo"로
+  return String(raw).replace(/^:/, '').replace(/:$/, '');
+}
+
+async function resolveMisskeyEmojiURLByHost(host, name) {
+  if (!host || !name) return null;
+  const list = await getMisskeyEmojis(host);
+  const n = normalizeEmojiName(name);
+  const found = list.find(e => e?.name === n);
+  return found?.url || null;
+}
+
+
 function escapeHTML(s='') {
   return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
 }
@@ -576,19 +590,45 @@ async function renderPostHTML(post, opts) {
       return em?.url || null;
     }
 
+    // 리액션 HTML
     let reactionsHTML = '';
     if (Array.isArray(mkReactions)) {
-      const mkBadges = mkReactions.map(r => {
+      // 각 리액션별로 URL을 비동기 해상 (r.host 우선, 없으면 글 추정 호스트)
+      const mkReHostFallback = (() => {
+        // 기존 deriveHost 로직 재사용
+        if (base && base._mkHost) return base._mkHost;
+        if (post && post._mkHost) return post._mkHost;
+        if (base && base._mkDebug?.host) return base._mkDebug.host;
+        if (post && post._mkDebug?.host) return post._mkDebug.host;
+        try { if (base && base._mkDebug?.apUri) return new URL(base._mkDebug.apUri).host; } catch {}
+        try { if (post && post._mkDebug?.apUri) return new URL(post._mkDebug.apUri).host; } catch {}
+        return null;
+      })();
+
+      const pieces = await Promise.all(mkReactions.map(async (r) => {
         const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : '';
-        const url = r.url
-          || (r.name && resolveMkUrlBy(r.name, r.host))
-          || null;
-        if (!url && r.char) return `<span class="badge">${r.char} ${cnt}</span>`;
-        if (url) return `<span class="badge"><img src="${url}" alt=":${r.name || ''}:" />${cnt}</span>`;
-        const label = r.name ? `:${r.name}:` : (r.char || '');
+        // 1) 이미 URL이 있으면 그대로
+        if (r?.url) {
+          return `<span class="badge"><img src="${r.url}" alt=":${r.name || ''}:" />${cnt}</span>`;
+        }
+        // 2) 유니코드(❤️ 같은)면 그대로 문자로
+        if (r?.char && !r?.name) {
+          return `<span class="badge">${r.char} ${cnt}</span>`;
+        }
+        // 3) 커스텀 이모지: r.host 우선 → 없으면 글 호스트로 시도
+        const host = r?.host || mkReHostFallback;
+        if (host && r?.name) {
+          const url = await resolveMisskeyEmojiURLByHost(host, r.name);
+          if (url) {
+            return `<span class="badge"><img src="${url}" alt=":${normalizeEmojiName(r.name)}:" />${cnt}</span>`;
+          }
+        }
+        // 4) 그래도 못 찾으면 ":name:" 표기로 폴백
+        const label = r?.name ? `:${normalizeEmojiName(r.name)}:` : (r?.char || '');
         return `<span class="badge">${label} ${cnt}</span>`;
-      }).join('');
-      reactionsHTML += mkBadges;
+      }));
+
+      reactionsHTML += pieces.join('');
     }
 
     const likeTargetId = base?.id || post?.id;
