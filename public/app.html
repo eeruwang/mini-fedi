@@ -19,6 +19,9 @@
       --radius: 14px;
       --radius-sm: 10px;
       --radius-lg: 18px;
+        --rx-font: 14px;
+      --rx-pad-y: 8px;
+      --rx-pad-x: 12px;
     }
     :root[data-theme="dark"] {
       --bg: #0b0e12;
@@ -145,8 +148,32 @@
 
     /* ====== Reactions ====== */
     .reactions {
-      display: flex; flex-wrap: wrap; gap: 6px;
+      display: flex; flex-wrap: wrap; gap: 8px;
       margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border);
+    }
+    .rx-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: var(--rx-pad-y) var(--rx-pad-x);
+      font-size: var(--rx-font);
+      line-height: 1;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: color-mix(in oklab, var(--card) 92%, transparent);
+      cursor: default;            /* 클릭 아님 */
+      user-select: none;
+    }
+    .rx-chip img {
+      height: 1.4em;              /* 버튼 크기감 */
+      width: auto;
+      vertical-align: -0.2em;
+      border-radius: 3px;
+    }
+
+    /* hover 시 미세 강조 (버튼처럼 보이되 클릭 아님) */
+    .rx-chip:hover {
+      background: var(--btn-bg-hover);
     }
     .badge {
       display: inline-flex; align-items: center; gap: 6px;
@@ -737,10 +764,18 @@ async function buildReactionsHTMLForMasto({ base, post, isMine, faves, boosts, r
 
       if (r?.url) {
         const alt = p.char ? p.char : (p.name ? `:${p.name}:` : (q || '❓'));
-        return `<span class="badge"><img src="${r.url}" alt="${alt}" loading="lazy" decoding="async" fetchpriority="low" />${cnt}</span>`;
+        return `<span class="rx-chip" role="img" aria-label="${p.name ? ':'+p.name+':' : (p.char || '')}">
+          <img src="${r.url}" alt="${alt}" loading="lazy" decoding="async" fetchpriority="low" />
+          ${cnt ? `<span class="meta" style="opacity:.7;margin-left:2px;">${cnt}</span>` : ''}
+        </span>`;
+
       }
       if (p.char && !p.name) {
-        return `<span class="badge">${p.char} ${cnt}</span>`;
+        return `<span class="rx-chip" role="img" aria-label="${p.name ? ':'+p.name+':' : (p.char || '')}">
+          ${p.char ? p.char : (r.url ? `<img src="${r.url}" alt=":${p.name}:" loading="lazy" decoding="async" fetchpriority="low" />` : `:${p.name}:`)}
+          ${cnt ? `<span class="meta" style="opacity:.7;margin-left:2px;">${cnt}</span>` : ''}
+        </span>`;
+
       }
       if (p.name) {
         const candidates = new Set();
@@ -749,13 +784,20 @@ async function buildReactionsHTMLForMasto({ base, post, isMine, faves, boosts, r
         const { url, tried, hit, match } = await resolveEmojiAcrossHostsWithDebug([...candidates], q);
         if (url) {
           if (debugOn) debugRows.push({key:q, tried, hit, match, url});
-          return `<span class="badge"><img src="${url}" alt=":${p.name}:" loading="lazy" decoding="async" fetchpriority="low" />${cnt}</span>`;
+          return `<span class="rx-chip" role="img" aria-label=":${p.name}:">
+            <img src="${url}" alt=":${p.name}:" loading="lazy" decoding="async" fetchpriority="low" />
+            ${cnt ? `<span class="meta" style="opacity:.7;margin-left:2px;">${cnt}</span>` : ''}
+          </span>`;
         } else if (debugOn) {
           debugRows.push({key:q, tried, hit:null, match:null, url:null});
         }
       }
       const label = p.name ? `:${p.name}:` : (p.char ? p.char : (q || '❓'));
-      return `<span class="badge">${label} ${cnt}</span>`;
+      return `<span class="rx-chip" role="img" aria-label="${label}">
+        ${label}
+        ${cnt ? `<span class="meta" style="opacity:.7;margin-left:2px;">${cnt}</span>` : ''}
+      </span>`;
+
     }));
     reactionsHTML += pieces.join('');
   }
@@ -914,7 +956,11 @@ async function renderPostHTML(post, opts) {
         const count = rx[key];
         const parsed = parseQualifiedEmoji(key);
         if (parsed.char) {
-          rxBadges.push(`<span class="badge">${parsed.char} ${count}</span>`);
+          rxBadges.push(`<span class="rx-chip" role="img" aria-label="${parsed.char}">
+            ${parsed.char}
+            <span class="meta" style="opacity:.7;margin-left:2px;">${count}</span>
+          </span>`);
+
           continue;
         }
         let em = (emojiIndexCache.get(normHost(host))?.byExact.get(parsed.name))
@@ -929,8 +975,11 @@ async function renderPostHTML(post, opts) {
           const idx = emojiIndexCache.get(normHost(postHost));
           em = idx?.byExact.get(parsed.name) || idx?.byLower.get(String(parsed.name).toLowerCase());
         }
-        if (em?.url) rxBadges.push(`<span class="badge"><img src="${em.url}" alt=":${parsed.name}:" loading="lazy" decoding="async" fetchpriority="low" />${count}</span>`);
-        else rxBadges.push(`<span class="badge">:${parsed.name}: ${count}</span>`);
+        if (em?.url) rxBadges.push(`<span class="rx-chip" role="img" aria-label=":${parsed.name}:">
+          <img src="${em.url}" alt=":${parsed.name}:" loading="lazy" decoding="async" fetchpriority="low" />
+          <span class="meta" style="opacity:.7;margin-left:2px;">${count}</span>
+        </span>`);
+
       }
     }
 
