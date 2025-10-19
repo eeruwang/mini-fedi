@@ -28,6 +28,53 @@ function parseLinkForNextMaxId(link: string | null): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+// 이모지 URL 캐시 키
+function emojiUrlCacheKey(host: string, name: string) {
+  return `mk:emojiurl:${host}:${name}`;
+}
+
+// meta/AP tag에서 못 찾을 때, 공개 경로 패턴을 빠르게 프로브해서 URL을 알아낸다.
+// 성공하면 KV에 길게 캐시한다(기본 7일).
+async function probeEmojiUrl(env: Env, host: string, name: string): Promise<string | null> {
+  host = (host || "").trim().toLowerCase();
+  name = (name || "").trim().toLowerCase();
+  if (!host || !name) return null;
+
+  const kvKey = emojiUrlCacheKey(host, name);
+  const cached = await env.FEDIOAUTH_KV.get(kvKey);
+  if (cached) {
+    try { return JSON.parse(cached); } catch {}
+  }
+
+  // Misskey 쪽에서 자주 쓰이는 공개 경로 패턴들 (우선순위대로 시도)
+  const candidates = [
+    `https://${host}/emoji/${name}.webp`,
+    `https://${host}/emoji/${name}.png`,
+    `https://${host}/emoji/${name}.gif`,
+    // 일부 포크/리버스프록시 경로들
+    `https://${host}/assets/emoji/${name}.webp`,
+    `https://${host}/assets/emoji/${name}.png`,
+    `https://${host}/assets/emoji/${name}.gif`,
+  ];
+
+  // 너무 많은 네트워크를 막으려고 짧은 타임아웃 + 첫 성공만 사용
+  for (const url of candidates) {
+    try {
+      const res = await fetchWithTimeout(url, { method: "GET", redirect: "follow" }, 1200);
+      const ok = res.ok && /^image\//i.test(res.headers.get("content-type") || "");
+      if (ok) {
+        await env.FEDIOAUTH_KV.put(kvKey, JSON.stringify(url), { expirationTtl: 60 * 60 * 24 * 7 });
+        return url;
+      }
+    } catch {
+      // 타임아웃/네트워크 실패는 다음 후보로
+    }
+  }
+  // 못 찾았다는 것도 잠깐 캐시(스톰 막기)
+  await env.FEDIOAUTH_KV.put(kvKey, JSON.stringify(null), { expirationTtl: 60 * 15 });
+  return null;
+}
+
 async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms = 1500) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), ms);
@@ -312,10 +359,17 @@ async function getMisskeyMeta(env: Env, host: string) {
 
 // 원격 호스트 이모지 URL 조회
 async function getEmojiUrlFromHost(env: Env, host: string, name: string): Promise<string | null> {
-  const m = await getMisskeyMeta(env, normalizeHost(host)!).catch(() => null);
-  if (!m) return null;
-  return resolveEmojiUrlFromMeta(m, normalizeName(name));
+  host = normalizeHost(host)!;
+  name = normalizeName(name);
+
+  const m = await getMisskeyMeta(env, host).catch(() => null);
+  const byMeta = m ? resolveEmojiUrlFromMeta(m, name) : null;
+  if (byMeta) return byMeta;
+
+  // ▼ 추가: 메타에 없으면 공개 경로 프로브까지 바로 시도
+  return await probeEmojiUrl(env, host, name);
 }
+
 
 // /api/notes/show — fetchRetry 적용
 async function getNotesShow(env: Env, host: string, noteId: string) {
@@ -572,6 +626,24 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
                     urlHit = tagUrl;
                   }
                 }
+                /** === (신규 4) 공개 경로 프로브 — AP tag까지 실패했을 때 마지막 보강 ===
+                 *  - 우선순위: alias/키에서 지정된 host → 없으면 원글 host
+                 *  - 성공 시 7일 캐시(KV), 실패는 15분 동안 부정 캐시
+                 */
+                if (!urlHit) {
+                  const probeHost = normalizeHost(kindInfo.host) || (st._mkHost || job.host);
+                  if (probeHost) {
+                    const probed = await probeEmojiUrl(env, probeHost, name);
+                    if (probed) {
+                      urlHit = probed;
+                      counters.remote_hits++;           // 프로브도 원격 조회로 집계
+                      step.urlFrom = "probe";
+                      step.probeHost = probeHost;
+                      step.url = probed;
+                    }
+                  }
+                }
+
 
                 // host 결정 로직
                 let itemHost: string | null = null;
@@ -588,7 +660,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
                 } else {
                   itemHost = job.host.toLowerCase();
                 }
-
+                // 3) AP tag
                 if (!urlHit) {
                   counters.custom_without_url++;
                   step.urlFrom = "none";
