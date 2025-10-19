@@ -20,16 +20,22 @@ async function fetchFromMisskey(host: string): Promise<EmojiEntry[] | null> {
       body: "{}",
     });
     if (r.ok) {
-      const data = await r.json<any[]>();
-      return data.map((e) => ({ name: e.name, url: e.url, static_url: e.url }));
+      const data = await r.json<any>();
+      const arr = Array.isArray(data) ? data
+                : Array.isArray(data?.emojis) ? data.emojis
+                : [];
+      return arr.map((e: any) => ({ name: e.name, url: e.url, static_url: e.url }));
     }
   } catch {}
   // 2) GET /api/emojis (구형)
   try {
     const r = await fetch(`${toBase(host)}/api/emojis`);
     if (r.ok) {
-      const data = await r.json<any[]>();
-      return data.map((e) => ({ name: e.name, url: e.url, static_url: e.url }));
+      const data = await r.json<any>();
+      const arr = Array.isArray(data) ? data
+                : Array.isArray(data?.emojis) ? data.emojis
+                : [];
+      return arr.map((e: any) => ({ name: e.name, url: e.url, static_url: e.url }));
     }
   } catch {}
   return null;

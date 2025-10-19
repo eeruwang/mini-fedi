@@ -441,7 +441,7 @@ async function resolveMisskeyEmojiURLByHost(hostCandidate, nameOrQualified) {
   const parsed = parseQualifiedEmoji(nameOrQualified);
   if (parsed.char) return null; // 유니코드엔 URL 없음
   const name = parsed.name;
-  const host = parsed.host || hostCandidate;
+  const host = parsed.host || hostCandidate || null;
   if (!host || !name) return null;
   const list = await getMisskeyEmojis(host);
   const found = list.find(e => e?.name === name);
@@ -614,7 +614,7 @@ async function renderPostHTML(post, opts) {
     if (Array.isArray(mkReactions) && mkReactions.length) {
       for (const r of mkReactions) {
         const h1 = (r && typeof r.host === 'string' && r.host !== '.' && r.host) ? r.host : null;
-        if (h1) hostsToPrefetch.add(h1);
+        if (h1) hostsToPrefetch.add(h1);           // ← 반드시 유지
         const q = (r?.qualified ?? r?.name ?? '').toString();
         const p = parseQualifiedEmoji(q);
         if (p.host) hostsToPrefetch.add(p.host);
