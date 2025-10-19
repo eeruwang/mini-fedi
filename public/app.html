@@ -19,7 +19,7 @@
       --radius: 14px;
       --radius-sm: 10px;
       --radius-lg: 18px;
-        --rx-font: 14px;
+      --rx-font: 14px;
       --rx-pad-y: 8px;
       --rx-pad-x: 12px;
     }
@@ -77,7 +77,6 @@
     .post {
       padding: 14px 16px;
       border-bottom: 1px solid var(--border);
-
       /* 성능: 오프스크린 스킵 + 추정 높이 */
       content-visibility: auto;
       contain-intrinsic-size: 0 420px;
@@ -148,9 +147,14 @@
 
     /* ====== Reactions ====== */
     .reactions {
-      display: flex; flex-wrap: wrap; gap: 8px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
       margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border);
     }
+    /* ✨ 리액션/액션 분리 레이아웃 */
+    .rx-list   { display: flex; flex-wrap: wrap; gap: 8px; }
+    .rx-actions{ display: flex; gap: 8px; margin-left: auto; }
+
+    /* 리액션 칩 (크게 보이게) */
     .rx-chip {
       display: inline-flex;
       align-items: center;
@@ -165,16 +169,22 @@
       user-select: none;
     }
     .rx-chip img {
-      height: 1.4em;              /* 버튼 크기감 */
+      height: 1.4em;              /* 버튼보다 크게 */
       width: auto;
       vertical-align: -0.2em;
       border-radius: 3px;
     }
+    .rx-chip:hover { background: var(--btn-bg-hover); }
 
-    /* hover 시 미세 강조 (버튼처럼 보이되 클릭 아님) */
-    .rx-chip:hover {
-      background: var(--btn-bg-hover);
+    /* 액션 버튼(.badge) 크기 고정 – 리액션 확대와 분리 */
+    .reactions .badge {
+      font-size: 12px !important;
+      padding: 6px 10px !important;
+      line-height: 1 !important;
     }
+    .reactions .badge img { height: 1.1em !important; }
+
+    /* 기본 배지 스타일(댓글/부스트/좋아요) */
     .badge {
       display: inline-flex; align-items: center; gap: 6px;
       border: 1px solid var(--border);
@@ -186,7 +196,10 @@
     .badge:hover { background: var(--btn-bg-hover); }
     .badge:active { transform: translateY(1px); }
     .badge img { height: 1.1em; width: auto; vertical-align: -0.2em; border-radius: 3px; }
-    .like-btn[aria-pressed="true"] { background: color-mix(in oklab, var(--link) 12%, var(--card)); border-color: color-mix(in oklab, var(--link) 25%, var(--border)); }
+    .like-btn[aria-pressed="true"] {
+      background: color-mix(in oklab, var(--link) 12%, var(--card));
+      border-color: color-mix(in oklab, var(--link) 25%, var(--border));
+    }
 
     /* ====== Reblog/Boost ====== */
     .post.reblog { padding: 8px 16px 14px; background: transparent; border-bottom: 1px solid var(--border); }
@@ -248,6 +261,7 @@
     .liker-chip .txt { line-height: 1.2; }
     .liker-chip .txt .meta { display:block; font-size: 12px; opacity:.7; }
   </style>
+
 </head>
 <body>
 <header>
@@ -811,6 +825,7 @@ async function buildReactionsHTMLForMasto({ base, post, isMine, faves, boosts, r
             title="${isMine ? 'Show who liked' : 'Like'}">⭐ ${faves}</button>
   `;
 
+
   if (debugOn && debugRows.length) {
     reactionsHTML += `<div class="meta" style="margin-top:6px;overflow:auto">
       <table style="font-size:12px;border-collapse:collapse;border:1px dashed var(--border)">
@@ -869,10 +884,14 @@ async function renderPostHTML(post, opts) {
     const card = (htmlHead, inner) => `
       ${htmlHead}
       ${mediaHTML}
-      <div class="reactions" id="rx-${likeTargetId}"></div>
+      <div class="reactions">
+        <div class="rx-list" id="rx-${likeTargetId}"></div>
+        <div class="rx-actions" id="ax-${likeTargetId}"></div>
+      </div>
       ${debugHTML}
       <div class="thread" data-for="${likeTargetId}" hidden></div>
     `;
+
 
     // 리액션은 후순위로 채움
     scheduleReactionTask(async () => {
