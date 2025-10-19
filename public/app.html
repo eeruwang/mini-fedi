@@ -648,21 +648,46 @@ async function renderPostHTML(post, opts) {
     const createdAt = base?.created_at || '';
     const avatarURL = acc.avatar_static || acc.avatar || '';
 
+    // ===== Mastodon 커스텀 이모지 맵 (이름, 계정, 투표 등)
     const mastoEmojiMap = buildMastoEmojiMap(base);
+
+    // 본문/이름 내 커스텀 이모지 렌더
     const contentHTML = renderEmojisToHTML(base?.content || '', mastoEmojiMap);
+
+    // 미디어
     const mediaHTML = renderMedia(base);
 
     const faves = base?.favourites_count ?? 0;
     const boosts = base?.reblogs_count ?? 0;
     const replies = base?.replies_count ?? 0;
 
-    // Misskey 리액션 보강(있으면)
+    // ===== Misskey 리액션 (부스트/원글 어디에 달리든 다 잡기)
+    const mkReactions =
+      (base && base._mkReactions) ||
+      (post && post._mkReactions) ||
+      null;
+
+    // Misskey 이모지 URL이 빠진 항목이 있으면, 이모지 맵을 원글/겉 객체의 host 우선순위로 조회
     let mkEmojiList = [];
-    const needMkEmoji = Array.isArray(base?._mkReactions) && base._mkReactions.some(r => !r.url);
+    const needMkEmoji = Array.isArray(mkReactions) && mkReactions.some(r => !r.url);
     if (needMkEmoji) {
-      const mkReHost = base?._mkHost
-        || base?._mkDebug?.host
-        || (base?._mkDebug?.apUri ? new URL(base._mkDebug.apUri).host : null);
+      const deriveHost = () => {
+        // 1) 명시 host
+        if (base && base._mkHost) return base._mkHost;
+        if (post && post._mkHost) return post._mkHost;
+        // 2) 디버그 정보에 host
+        if (base && base._mkDebug?.host) return base._mkDebug.host;
+        if (post && post._mkDebug?.host) return post._mkDebug.host;
+        // 3) apUri에서 추출
+        try {
+          if (base && base._mkDebug?.apUri) return new URL(base._mkDebug.apUri).host;
+        } catch {}
+        try {
+          if (post && post._mkDebug?.apUri) return new URL(post._mkDebug.apUri).host;
+        } catch {}
+        return null;
+      };
+      const mkReHost = deriveHost();
       mkEmojiList = mkReHost ? await getMisskeyEmojis(mkReHost) : [];
     }
     const resolveMkUrl = (name) => {
@@ -670,9 +695,10 @@ async function renderPostHTML(post, opts) {
       return em?.url || null;
     };
 
+    // 리액션 HTML
     let reactionsHTML = '';
-    if (Array.isArray(base?._mkReactions)) {
-      const mkBadges = base._mkReactions.map(r => {
+    if (Array.isArray(mkReactions)) {
+      const mkBadges = mkReactions.map(r => {
         const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : '';
         const url = r.url || (r.name && resolveMkUrl(r.name));
         if (!url && r.char) return `<span class="badge">${r.char} ${cnt}</span>`;
@@ -682,7 +708,7 @@ async function renderPostHTML(post, opts) {
       reactionsHTML += mkBadges;
     }
 
-    // 🔘 Like 버튼(원글 ID 사용)
+    // 🔘 기본 액션들 (원글 ID 기준)
     const likeTargetId = base?.id || post?.id;
     reactionsHTML += `
       <button class="badge reply-toggle" data-id="${likeTargetId}" title="Show replies">💬 ${replies}</button>
@@ -692,16 +718,17 @@ async function renderPostHTML(post, opts) {
               title="${isMine ? 'Show who liked' : 'Like'}">⭐ ${faves}</button>
     `;
 
-
+    // 디버그 블럭
     const debugOn = new URL(location.href).searchParams.get('debug') === '1'
       || new URL(location.href).searchParams.get('debug') === '2';
-    const debugHTML = (debugOn && base?._mkDebug)
-      ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(base._mkDebug, null, 2))}</pre>`
+    const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
+    const debugHTML = (debugOn && debugObj)
+      ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(debugObj, null, 2))}</pre>`
       : '';
 
     const likersBlock = `<div class="likers" data-for="${likeTargetId}" hidden></div>`;
 
-    // ✨ 리블로그 형태
+    // ✨ 리블로그 카드
     if (isReblog) {
       const boosterName = booster?.display_name || booster?.username || '';
       const boosterHandle = booster?.acct ? `@${booster.acct}` : '';
@@ -721,7 +748,7 @@ async function renderPostHTML(post, opts) {
             <div class="post-head">
               <img class="avatar" src="${avatarURL}" alt="" loading="lazy">
               <div>
-                <div class="name">${renderEmojisToHTML(displayName, mastoEmojiMap)} <span class="meta">${handle}</span></div>
+                <div class="name">${renderEmojisToHTML(escapeHTML(displayName), mastoEmojiMap)} <span class="meta">${escapeHTML(handle)}</span></div>
                 <div class="meta">${new Date(createdAt).toLocaleString()}</div>
               </div>
             </div>
@@ -735,13 +762,13 @@ async function renderPostHTML(post, opts) {
       `;
     }
 
-    // ✨ 일반 카드(리블로그 아님)
+    // ✨ 일반 카드
     return `
       <article class="post">
         <div class="post-head">
           <img class="avatar" src="${avatarURL}" alt="" loading="lazy">
           <div>
-            <div class="name">${renderEmojisToHTML(displayName, mastoEmojiMap)} <span class="meta">${handle}</span></div>
+            <div class="name">${renderEmojisToHTML(escapeHTML(displayName), mastoEmojiMap)} <span class="meta">${escapeHTML(handle)}</span></div>
             <div class="meta">${new Date(createdAt).toLocaleString()}</div>
           </div>
         </div>
@@ -755,7 +782,7 @@ async function renderPostHTML(post, opts) {
     `;
   }
 
-
+  // ===== Misskey 타임라인 렌더 =====
   if (source === 'misskey') {
     const u = post?.user || {};
     const displayName = u.name || u.username || '';
@@ -763,6 +790,7 @@ async function renderPostHTML(post, opts) {
     const createdAt = post?.createdAt || '';
     const avatarURL = u.avatarUrl || '';
     const host = getCookie('mk_host');
+
     const emojiList = await getMisskeyEmojis(host);
     const text = post?.text || '';
     const textHTML = renderEmojisToHTML(escapeHTML(text).replace(/\n/g, '<br>'), emojiList);
@@ -785,7 +813,7 @@ async function renderPostHTML(post, opts) {
         <div class="post-head">
           <img class="avatar" src="${avatarURL}" alt="" loading="lazy">
           <div>
-            <div class="name">${renderEmojisToHTML(escapeHTML(displayName), emojiList)} <span class="meta">${handle}</span></div>
+            <div class="name">${renderEmojisToHTML(escapeHTML(displayName), emojiList)} <span class="meta">${escapeHTML(handle)}</span></div>
             <div class="meta">${new Date(createdAt).toLocaleString()}</div>
           </div>
         </div>
@@ -798,6 +826,7 @@ async function renderPostHTML(post, opts) {
 
   return `<article class="post"><div class="content">Unsupported post</div></article>`;
 }
+
 
 /* =========================
    Timeline state & loaders
