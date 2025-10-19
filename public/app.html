@@ -74,13 +74,11 @@
     .post {
       padding: 14px 16px;
       border-bottom: 1px solid var(--border);
-      border-radius: 0; /* 리스트 기본 */
+      border-radius: 0;
     }
-    /* 더 카드스럽게 보이고 싶으면 아래 두 줄의 주석을 풀어 사용 */
     .post:first-child { border-top-left-radius: var(--radius); border-top-right-radius: var(--radius); }
     .post:last-child  { border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); border-bottom: 1px solid var(--border); }
 
-    /* 개별 카드를 떠보이게 (리스트 전체가 아니라 카드형으로 쓰려면 .post에 box-shadow 적용) */
     .post.cardish {
       background: var(--card);
       border: 1px solid var(--border);
@@ -127,16 +125,11 @@
     /* ====== Media grid ====== */
     .media { margin-top: 10px; }
     .media > * { display: block; width: 100%; border-radius: var(--radius); }
-    /* 기본 1장 */
     .media:has(img:nth-child(1):last-child),
-    .media:has(video:nth-child(1):last-child) {
-      display: block;
-    }
-    /* 2~4장 그리드 */
+    .media:has(video:nth-child(1):last-child) { display: block; }
     .media:has(img:nth-child(2)),
     .media:has(video:nth-child(2)) {
-      display: grid; gap: 8px;
-      grid-template-columns: repeat(2, 1fr);
+      display: grid; gap: 8px; grid-template-columns: repeat(2, 1fr);
     }
     .media img, .media video {
       width: 100%; height: auto; border-radius: var(--radius);
@@ -176,9 +169,7 @@
       border: 1px solid var(--border);
       background: var(--card);
       border-radius: var(--radius);
-      padding: 12px;
-      position: relative;
-      box-shadow: var(--shadow);
+      padding: 12px; position: relative; box-shadow: var(--shadow);
     }
     .reblog-inner::before {
       content: ""; position: absolute; left: 0; top: 10px; bottom: 10px;
@@ -201,11 +192,7 @@
       animation: fadeIn .18s ease;
     }
     @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
-    .thread .post {
-      background: none;
-      border-bottom: 1px dashed var(--border);
-      padding-left: 0;
-    }
+    .thread .post { background: none; border-bottom: 1px dashed var(--border); padding-left: 0; }
     .thread .post:last-child { border-bottom: 0; }
 
     /* ====== Links/Focus ====== */
@@ -216,67 +203,20 @@
     /* ====== Utilities ====== */
     .muted { color: var(--muted); }
 
-    /* 리블로그 배너/유저칩의 미니 아바타 고정 크기 */
     .user-chip .avatar-mini,
     .reblog-banner .avatar-mini {
-      width: 16px;
-      height: 16px;
-      border-radius: 999px;
-      object-fit: cover;
-      background: #222;
-      flex: 0 0 16px;
-      aspect-ratio: 1 / 1;
+      width: 16px; height: 16px; border-radius: 999px; object-fit: cover; background: #222; flex: 0 0 16px; aspect-ratio: 1 / 1;
     }
-    /* 새 글 슬라이드 인 애니메이션 */
-    .post.slide-enter {
-      transform: translateY(-14px);
-      opacity: 0;
-    }
-    .post.slide-enter-active {
-      transform: translateY(0);
-      opacity: 1;
-      transition: transform .28s ease, opacity .28s ease;
-    }
+    .post.slide-enter { transform: translateY(-14px); opacity: 0; }
+    .post.slide-enter-active { transform: translateY(0); opacity: 1; transition: transform .28s ease, opacity .28s ease; }
+    .new-spacer { height: 0px; transition: height .28s ease; }
 
-    /* 아래 spacer는 기존 포스트들이 "밀려 내려가는" 연출용 */
-    .new-spacer {
-      height: 0px;
-      transition: height .28s ease;
-    }
-
-    .likers {
-      overflow: hidden;
-      margin-top: 8px;
-      border-top: 1px dashed var(--border);
-      padding-top: 8px;
-      animation: fadeIn .18s ease;
-    }
-
-    .likers-list {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 8px;
-    }
-
-    .liker-chip {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      border: 1px solid var(--border);
-      background: color-mix(in oklab, var(--card) 96%, transparent);
-      border-radius: var(--radius-sm);
-      padding: 6px 8px;
-    }
-
-    .liker-chip img {
-      width: 28px; height: 28px; border-radius: 999px; object-fit: cover; background: #222;
-    }
-
+    .likers { overflow: hidden; margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; animation: fadeIn .18s ease; }
+    .likers-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+    .liker-chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: color-mix(in oklab, var(--card) 96%, transparent); border-radius: var(--radius-sm); padding: 6px 8px; }
+    .liker-chip img { width: 28px; height: 28px; border-radius: 999px; object-fit: cover; background: #222; }
     .liker-chip .txt { line-height: 1.2; }
     .liker-chip .txt .meta { display:block; font-size: 12px; opacity:.7; }
-
-
-
   </style>
 </head>
 <body>
@@ -288,7 +228,6 @@
     </div>
     <div style="flex:1"></div>
     <div class="row">
-      <!-- header 오른쪽 -->
       <button id="acct-btn" class="pill acct" title="내 글 보기">
         <img id="acct-avatar" class="avatar-mini" alt="" />
         <span id="acct-name">…</span>
@@ -315,14 +254,12 @@ async function jfetch(url, opts = {}) {
   if (!r.ok) {
     const text = await r.text().catch(() => '');
     const err = new Error(`${r.status} ${r.statusText}`);
-    // @ts-ignore
     err.status = r.status; err.body = text;
     throw err;
   }
   const ct = r.headers.get('content-type') || '';
   return ct.includes('application/json') ? r.json() : r.text();
 }
-// ⭐ 누르면 "좋아요한 사람" 목록을 아래로 펼치기 (내 글 전용)
 const likersCache = new Map(); // id -> HTML
 
 document.addEventListener('click', async (ev) => {
@@ -332,19 +269,16 @@ document.addEventListener('click', async (ev) => {
   const id = btn.dataset.id;
   if (!id) return;
 
-  // 이 카드의 likers 컨테이너 찾기
   const article = btn.closest('article');
   let box = article?.querySelector(`.likers[data-for="${CSS.escape(id)}"]`);
   if (!box) return;
 
-  // 토글: 열려있으면 닫기
   if (!box.hasAttribute('hidden')) {
     box.setAttribute('hidden', '');
     btn.title = 'Show who liked';
     return;
   }
 
-  // 캐시가 있으면 즉시 표시
   if (likersCache.has(id)) {
     box.innerHTML = likersCache.get(id);
     box.removeAttribute('hidden');
@@ -352,7 +286,6 @@ document.addEventListener('click', async (ev) => {
     return;
   }
 
-  // 로딩 표시
   box.innerHTML = `<div class="meta">불러오는 중…</div>`;
   box.removeAttribute('hidden');
   btn.title = 'Hide likers';
@@ -367,7 +300,6 @@ document.addEventListener('click', async (ev) => {
       return;
     }
 
-    // 사용자 칩 렌더
     const chips = list.map(u => {
       const name = (u.display_name || u.username || '').toString();
       const handle = u.acct ? `@${u.acct}` : '';
@@ -428,12 +360,17 @@ const emojiMapPromise = new Map();    // host -> Promise
 
 async function getMisskeyEmojis(host) {
   if (!host) return [];
+  host = host.replace(/^https?:\/\//, '').replace(/\/+$/, '');
   if (emojiMapCache.has(host)) return emojiMapCache.get(host);
   if (emojiMapPromise.has(host)) return emojiMapPromise.get(host);
 
-  const p = jfetch(`/api/mk/meta?host=${encodeURIComponent(host)}`)
+  const p = jfetch(`/mk/emoji?host=${encodeURIComponent(host)}`)
     .then(data => {
-      const list = Array.isArray(data?.emojis) ? data.emojis : [];
+      const map = data?.map || {};
+      const list = Object.entries(map).map(([name, v]) => ({
+        name,
+        url: (v && (v.static_url || v.url)) || null
+      })).filter(e => e.url);
       emojiMapCache.set(host, list);
       emojiMapPromise.delete(host);
       return list;
@@ -464,12 +401,13 @@ function buildMastoEmojiMap(status) {
 /* =========================
    Emoji rendering
    ========================= */
+function escapeRegExp(s='') { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function renderEmojisToHTML(textOrHTML, emojiList) {
   if (!textOrHTML || !emojiList?.length) return textOrHTML || '';
   let html = String(textOrHTML);
   for (const e of emojiList) {
     if (!e?.name || !e?.url) continue;
-    const re = new RegExp(`:${e.name}:`, 'g');
+    const re = new RegExp(`:${escapeRegExp(e.name)}:`, 'g');
     html = html.replace(
       re,
       `<img src="${e.url}" alt=":${e.name}:" style="height:1.2em;width:auto;vertical-align:-0.2em;aspect-ratio:auto;display:inline-block;">`
@@ -488,42 +426,27 @@ let lastTopId = null;
 let refreshTimer = null;
 
 function getIdFromPost(item) {
-  // Masto/부스트 모두 대응
   return item?.reblog?.id ?? item?.id ?? null;
 }
-
-function startPolling() {
-  if (refreshTimer) return;
-  refreshTimer = setInterval(checkForUpdates, 30000); // 30s
-}
-
-function stopPolling() {
-  if (!refreshTimer) return;
-  clearInterval(refreshTimer);
-  refreshTimer = null;
-}
+function startPolling() { if (!refreshTimer) refreshTimer = setInterval(checkForUpdates, 30000); }
+function stopPolling() { if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; } }
 
 async function checkForUpdates() {
   try {
     if (!source || mode !== 'home' || !lastTopId) return;
 
-    // since_id=lastTopId 로 "그 이후 새 글만" 요청
     const base = source === 'masto' ? '/api/home' : '/api/mk/home';
     const url = new URL(base, location.origin);
-    url.searchParams.set('merge', '0');          // 가벼운 응답
-    url.searchParams.set('limit', '20');         // 한 번에 최대 20개까지
-    if (source === 'masto') url.searchParams.set('since_id', lastTopId); // ⬅️ 핵심
-    else url.searchParams.set('sinceId', lastTopId);   // ← Misskey는 카멜
+    url.searchParams.set('merge', '0');
+    url.searchParams.set('limit', '20');
+    if (source === 'masto') url.searchParams.set('since_id', lastTopId);
+    else url.searchParams.set('sinceId', lastTopId);
 
     const data = await jfetch(url.toString());
     const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
     if (!items.length) return;
 
-    // 새 글은 서버가 "최신→오래된" 순으로 줄 가능성이 크니,
-    // DOM에 넣을 땐 반대로(오래된→최신) 순서로 prepend 해야 자연스러움
     const toPrepend = [...items].reverse();
-
-    // 현재 스크롤이 많이 내려가 있으면 갑작스런 점프 방지 (선택)
     const nearTop = window.scrollY < 80;
 
     for (const post of toPrepend) {
@@ -531,18 +454,14 @@ async function checkForUpdates() {
       const wrapper = document.createElement('div');
       wrapper.innerHTML = html;
       const node = wrapper.firstElementChild;
-
-      // 상단에 꽂기
       if (feedEl.firstChild) feedEl.insertBefore(node, feedEl.firstChild);
       else feedEl.appendChild(node);
     }
 
-    // 새 최상단 id 로 갱신
     const newest = toPrepend[toPrepend.length - 1];
     const newTopId = newest?.reblog?.id ?? newest?.id ?? null;
     if (newTopId) lastTopId = newTopId;
 
-    // 살짝 강조 애니메이션 (선택)
     try {
       for (let i = 0; i < toPrepend.length; i++) {
         const el = feedEl.children[i];
@@ -553,55 +472,22 @@ async function checkForUpdates() {
       }
     } catch {}
 
-    // 스크롤 상단 유지 (옵션)
-    if (nearTop) {
-      // 아무 것도 안 해도 되지만, 필요하면 스크롤 미세 조정 가능
-    }
-
-    // 너무 길어지는 것 방지 (옵션: 400개 초과 시 하단부터 제거)
+    if (nearTop) {}
     const MAX_POSTS = 400;
     while (feedEl.children.length > MAX_POSTS) {
       feedEl.removeChild(feedEl.lastElementChild);
     }
-
   } catch (e) {
     console.warn('Auto refresh failed', e);
   }
 }
-
-function showNewPostBanner() {
-  if (document.getElementById('new-post-banner')) return;
-  const banner = document.createElement('div');
-  banner.id = 'new-post-banner';
-  banner.textContent = '새 글이 올라왔습니다 — 새로고침';
-  banner.style.cssText = `
-    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
-    background: var(--card); color: var(--fg);
-    border: 1px solid var(--border);
-    border-radius: 999px; padding: 8px 16px;
-    font-size: 13px; box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-    cursor: pointer; z-index: 1000; animation: fadeIn .25s ease;
-  `;
-  banner.addEventListener('click', async () => {
-    banner.remove();
-    // 완전 새로 채우기
-    feedEl.innerHTML = '';
-    cursor = null;
-    await loadPage(true);
-    await autofillIfNeeded();
-  });
-  document.body.appendChild(banner);
-}
-
-// 탭이 백그라운드로 가면 폴링 잠깐 멈추기(낭비 방지)
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopPolling();
   else if (mode === 'home' && source === 'misskey') startPolling();
 });
 
-
 /* =========================
-   Media rendering (Masto/Misskey)
+   Media rendering
    ========================= */
 function renderMedia(post) {
   const media = Array.isArray(post?.media_attachments) ? post.media_attachments
@@ -633,11 +519,11 @@ function renderMedia(post) {
    Post card rendering
    ========================= */
 async function renderPostHTML(post, opts) {
-  const { source } = opts; // 'masto' | 'misskey'
+  const { source } = opts;
 
   if (source === 'masto') {
     const isReblog = !!post?.reblog;
-    const base = isReblog ? post.reblog : post;   // 원글
+    const base = isReblog ? post.reblog : post;
     const booster = isReblog ? post.account : null;
 
     const isMine = !!myMastoId && base?.account?.id === myMastoId;
@@ -648,67 +534,63 @@ async function renderPostHTML(post, opts) {
     const createdAt = base?.created_at || '';
     const avatarURL = acc.avatar_static || acc.avatar || '';
 
-    // ===== Mastodon 커스텀 이모지 맵 (이름, 계정, 투표 등)
     const mastoEmojiMap = buildMastoEmojiMap(base);
-
-    // 본문/이름 내 커스텀 이모지 렌더
     const contentHTML = renderEmojisToHTML(base?.content || '', mastoEmojiMap);
-
-    // 미디어
     const mediaHTML = renderMedia(base);
 
     const faves = base?.favourites_count ?? 0;
     const boosts = base?.reblogs_count ?? 0;
     const replies = base?.replies_count ?? 0;
 
-    // ===== Misskey 리액션 (부스트/원글 어디에 달리든 다 잡기)
-    const mkReactions =
-      (base && base._mkReactions) ||
-      (post && post._mkReactions) ||
-      null;
+    // ===== Misskey reactions (from bridge)
+    const mkReactions = (base && base._mkReactions) || (post && post._mkReactions) || null;
 
-    // Misskey 이모지 URL이 빠진 항목이 있으면, 이모지 맵을 원글/겉 객체의 host 우선순위로 조회
-    let mkEmojiList = [];
-    const needMkEmoji = Array.isArray(mkReactions) && mkReactions.some(r => !r.url);
-    if (needMkEmoji) {
-      const deriveHost = () => {
-        // 1) 명시 host
-        if (base && base._mkHost) return base._mkHost;
-        if (post && post._mkHost) return post._mkHost;
-        // 2) 디버그 정보에 host
-        if (base && base._mkDebug?.host) return base._mkDebug.host;
-        if (post && post._mkDebug?.host) return post._mkDebug.host;
-        // 3) apUri에서 추출
-        try {
-          if (base && base._mkDebug?.apUri) return new URL(base._mkDebug.apUri).host;
-        } catch {}
-        try {
-          if (post && post._mkDebug?.apUri) return new URL(post._mkDebug.apUri).host;
-        } catch {}
-        return null;
-      };
-      const mkReHost = deriveHost();
-      mkEmojiList = mkReHost ? await getMisskeyEmojis(mkReHost) : [];
-    }
-    const resolveMkUrl = (name) => {
-      const em = mkEmojiList.find(e => e?.name === name);
-      return em?.url || null;
+    // 이모지 맵 프리페치: 원글 호스트 + 리액션별 host
+    let mkHostGuess = null;
+    const deriveHost = () => {
+      if (base && base._mkHost) return base._mkHost;
+      if (post && post._mkHost) return post._mkHost;
+      if (base && base._mkDebug?.host) return base._mkDebug.host;
+      if (post && post._mkDebug?.host) return post._mkDebug.host;
+      try { if (base && base._mkDebug?.apUri) return new URL(base._mkDebug.apUri).host; } catch {}
+      try { if (post && post._mkDebug?.apUri) return new URL(post._mkDebug.apUri).host; } catch {}
+      return null;
     };
+    mkHostGuess = deriveHost();
 
-    // 리액션 HTML
+    const hostsToPrefetch = new Set();
+    if (mkHostGuess) hostsToPrefetch.add(mkHostGuess);
+    if (Array.isArray(mkReactions)) {
+      for (const r of mkReactions) {
+        const h = (r && typeof r.host === 'string' && r.host !== '.' && r.host) ? r.host : null;
+        if (h) hostsToPrefetch.add(h);
+      }
+    }
+    await Promise.all([...hostsToPrefetch].map(h => getMisskeyEmojis(h)));
+
+    function resolveMkUrlBy(name, hostCandidate) {
+      const h = (hostCandidate && hostCandidate !== '.') ? hostCandidate : mkHostGuess;
+      if (!h) return null;
+      const list = emojiMapCache.get(h) || [];
+      const em = list.find(e => e?.name === name);
+      return em?.url || null;
+    }
+
     let reactionsHTML = '';
     if (Array.isArray(mkReactions)) {
       const mkBadges = mkReactions.map(r => {
         const cnt = (typeof r.count === 'number' && r.count > 0) ? r.count : '';
-        const url = r.url || (r.name && resolveMkUrl(r.name));
+        const url = r.url
+          || (r.name && resolveMkUrlBy(r.name, r.host))
+          || null;
         if (!url && r.char) return `<span class="badge">${r.char} ${cnt}</span>`;
         if (url) return `<span class="badge"><img src="${url}" alt=":${r.name || ''}:" />${cnt}</span>`;
-        return `<span class="badge">${r.name ?? ''} ${cnt}</span>`;
+        const label = r.name ? `:${r.name}:` : (r.char || '');
+        return `<span class="badge">${label} ${cnt}</span>`;
       }).join('');
       reactionsHTML += mkBadges;
     }
 
-    // 🔘 기본 액션들 (원글 ID 기준)
     const likeTargetId = base?.id || post?.id;
     reactionsHTML += `
       <button class="badge reply-toggle" data-id="${likeTargetId}" title="Show replies">💬 ${replies}</button>
@@ -718,7 +600,6 @@ async function renderPostHTML(post, opts) {
               title="${isMine ? 'Show who liked' : 'Like'}">⭐ ${faves}</button>
     `;
 
-    // 디버그 블럭
     const debugOn = new URL(location.href).searchParams.get('debug') === '1'
       || new URL(location.href).searchParams.get('debug') === '2';
     const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
@@ -728,7 +609,6 @@ async function renderPostHTML(post, opts) {
 
     const likersBlock = `<div class="likers" data-for="${likeTargetId}" hidden></div>`;
 
-    // ✨ 리블로그 카드
     if (isReblog) {
       const boosterName = booster?.display_name || booster?.username || '';
       const boosterHandle = booster?.acct ? `@${booster.acct}` : '';
@@ -762,7 +642,6 @@ async function renderPostHTML(post, opts) {
       `;
     }
 
-    // ✨ 일반 카드
     return `
       <article class="post">
         <div class="post-head">
@@ -782,7 +661,7 @@ async function renderPostHTML(post, opts) {
     `;
   }
 
-  // ===== Misskey 타임라인 렌더 =====
+  // ===== Misskey 타임라인 =====
   if (source === 'misskey') {
     const u = post?.user || {};
     const displayName = u.name || u.username || '';
@@ -827,26 +706,21 @@ async function renderPostHTML(post, opts) {
   return `<article class="post"><div class="content">Unsupported post</div></article>`;
 }
 
-
 /* =========================
    Timeline state & loaders
    ========================= */
 const feedEl = document.getElementById('feed');
-let myMastoId = null;   // Mastodon 내 계정 ID
-let myMkId = null;      // Misskey  내 계정 ID
-let myAcct = null;      // Mastodon @acct (디버그용)
-let mode = 'home'; // 'home' | 'fav'
+let myMastoId = null;
+let myMkId = null;
+let myAcct = null;
+let mode = 'home';
 let isLoading = false;
-let cursor = null; // Masto: max_id, Misskey: untilId
-let source = null; // 'masto' | 'misskey'
+let cursor = null;
+let source = null;
 let activeHost = null;
 
-function hasMastoCookies() {
-  return !!getCookie('ap_token') && !!getCookie('ap_inst');
-}
-function hasMisskeyCookies() {
-  return !!getCookie('mk_token') && !!getCookie('mk_host');
-}
+function hasMastoCookies() { return !!getCookie('ap_token') && !!getCookie('ap_inst'); }
+function hasMisskeyCookies() { return !!getCookie('mk_token') && !!getCookie('mk_host'); }
 
 async function loadMe() {
   const preferMasto = hasMastoCookies();
@@ -857,12 +731,10 @@ async function loadMe() {
     source = 'masto';
     activeHost = getCookie('ap_inst') || '';
 
-    // 프로필 표시용 데이터
     const display = me?.display_name || me?.username || '';
     const handle  = me?.acct ? `@${me.acct}` : (me?.username ? `@${me.username}` : '');
     const avatar  = me?.avatar_static || me?.avatar || '';
 
-    // 이모지 맵(프로필 이름에 커스텀 이모지가 있을 수 있음)
     const list = Array.isArray(me?.emojis)
       ? me.emojis.map(e => {
           const name = e?.shortcode || e?.name;
@@ -878,9 +750,7 @@ async function loadMe() {
       nameEl.innerHTML =
         `${renderEmojisToHTML(escapeHTML(display), list)} <span class="meta">${escapeHTML(handle)}</span>`;
     }
-    if (avEl && avatar) {
-      avEl.src = avatar;
-    }
+    if (avEl && avatar) avEl.src = avatar;
 
     myMastoId = me?.id || null;
     myAcct = me?.acct || null;
@@ -902,14 +772,11 @@ async function loadMe() {
       nameEl.innerHTML =
         `${escapeHTML(display)} <span class="meta">${escapeHTML(handle)}</span>`;
     }
-    if (avEl && avatar) {
-      avEl.src = avatar;
-    }
+    if (avEl && avatar) avEl.src = avatar;
 
     myMkId = me?.id || null;
     return 'misskey';
   };
-
 
   try {
     if (preferMasto) return await tryMasto();
@@ -928,7 +795,7 @@ async function loadMe() {
   }
 }
 
-let io; // observer 핸들
+let io;
 
 async function loadPage(initial=false) {
   if (isLoading || !source) return;
@@ -942,31 +809,25 @@ async function loadPage(initial=false) {
           ? (source === 'masto' ? '/api/mine' : '/api/mk/mine')
           : (source === 'masto' ? '/api/home' : '/api/mk/home');
 
-
     const u = new URL(path, location.origin);
-    u.searchParams.set('limit', '20');   // ⬅️ 첫 페이지 20개만
+    u.searchParams.set('limit', '20');
     if (cursor) {
       source === 'masto' ? u.searchParams.set('max_id', cursor)
                         : u.searchParams.set('untilId', cursor);
     }
-
     if (new URL(location.href).searchParams.get('debug') === '1') {
       u.searchParams.set('debug', '1');
     }
 
     const data = await jfetch(u.toString());
-    // 홈이면 최신글 id 기억(초기 진입/리로드 모두 반영)
     if (mode === 'home') {
       const top = Array.isArray(data?.items) ? data.items[0] : Array.isArray(data) ? data[0] : null;
       lastTopId = top ? (top?.reblog?.id ?? top?.id ?? null) : lastTopId;
     }
 
-
-    // ⬅️ 원본 목록을 따로 보관 (커서 계산은 이걸로!)
     const rawItems = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
     let items = rawItems;
 
-    // 점진 렌더: 자리 먼저 만들고, 준비되는 대로 교체
     const frag = document.createDocumentFragment();
     const placeholders = items.map(() => {
       const ph = document.createElement('article');
@@ -992,7 +853,6 @@ async function loadPage(initial=false) {
       ? (data?.next_max_id || (rawItems.length ? rawItems[rawItems.length-1]?.id : null))
       : (data?.next || (rawItems.length ? rawItems[rawItems.length-1]?.id : null));
   } catch (e) {
-    // @ts-ignore
     if (e?.status === 401) {
       if (source === 'misskey' && hasMastoCookies()) {
         console.warn('Misskey 401: Mastodon으로 자동 전환합니다.');
@@ -1010,7 +870,6 @@ async function loadPage(initial=false) {
   }
 }
 
-// 초기 뷰포트 자동 채우기
 async function autofillIfNeeded(maxLoops = 3) {
   for (let i = 0; i < maxLoops; i++) {
     const sentinel = document.getElementById('sentinel');
@@ -1027,15 +886,10 @@ async function autofillIfNeeded(maxLoops = 3) {
 /* =========================
    Realtime streaming (SSE)
    ========================= */
-let es = null;                 // EventSource 핸들
-const seenIds = new Set();     // 중복 방지용 (id 캐시, 필요 시 크기 제한)
+let es = null;
+const seenIds = new Set();
+function postKey(item) { return item?.reblog?.id ?? item?.id ?? null; }
 
-function postKey(item) {
-  return item?.reblog?.id ?? item?.id ?? null;
-}
-
-// 새 글을 DOM 맨 위에 삽입
-// 새 글을 "위에서 내려오듯" 애니메이션으로 삽입
 async function prependStatus(st) {
   const key = postKey(st);
   if (!key) return;
@@ -1043,43 +897,29 @@ async function prependStatus(st) {
   seenIds.add(key);
   if (seenIds.size > 5000) { for (const k of seenIds) { seenIds.delete(k); if (seenIds.size <= 2500) break; } }
 
-  // 렌더 결과 노드 만들기
   const html = await renderPostHTML(st, { source: 'masto' });
   const wrap = document.createElement('div');
   wrap.innerHTML = html;
   const node = wrap.firstElementChild;
   if (!node) return;
 
-  // 1) 먼저 측정용으로 DOM에 잠깐 붙여서 높이 구함(보이진 않게)
   node.style.position = 'absolute';
   node.style.visibility = 'hidden';
   node.style.pointerEvents = 'none';
   feedEl.insertBefore(node, feedEl.firstChild || null);
   const h = node.getBoundingClientRect().height || 0;
-  // 측정 후 스타일 초기화
-  node.style.position = '';
-  node.style.visibility = '';
-  node.style.pointerEvents = '';
+  node.style.position = ''; node.style.visibility = ''; node.style.pointerEvents = '';
 
-  // 2) 기존 목록이 '밀려 내려가는' 느낌을 주기 위한 spacer
   const spacer = document.createElement('div');
   spacer.className = 'new-spacer';
-  spacer.style.height = h + 'px'; // 처음엔 새 글 높이만큼 차지
-  feedEl.insertBefore(spacer, node); // spacer가 더 위, node가 그 아래(=실제 첫 카드 자리)
+  spacer.style.height = h + 'px';
+  feedEl.insertBefore(spacer, node);
 
-  // 3) 새 글에 슬라이드 인 클래스 적용
   node.classList.add('slide-enter');
-  // 리플로우 강제 후 활성화
-  // eslint-disable-next-line no-unused-expressions
   node.getBoundingClientRect();
   node.classList.add('slide-enter-active');
+  requestAnimationFrame(() => { spacer.style.height = '0px'; });
 
-  // 4) 애니메이션 시작: spacer는 0으로 줄이고, 카드는 위에서 내려오며 보임
-  requestAnimationFrame(() => {
-    spacer.style.height = '0px';
-  });
-
-  // 5) 애니메이션 종료 후 정리
   const done = () => {
     node.classList.remove('slide-enter', 'slide-enter-active');
     spacer.remove();
@@ -1087,36 +927,21 @@ async function prependStatus(st) {
   };
   node.addEventListener('transitionend', done, { once: true });
 
-  // 혹시 첫 글이 없으면 그냥 append
   if (!feedEl.firstElementChild) feedEl.appendChild(node);
 }
-
-
 function startStream() {
   if (es || source !== 'masto') return;
   es = new EventSource('/api/stream/user', { withCredentials: true });
-
-  es.addEventListener('open', () => {
-    // console.debug('SSE open');
-  });
-  es.addEventListener('error', (e) => {
-    // console.warn('SSE error', e);
-    // 에러가 나면 브라우저가 자동 재연결 시도함
-  });
-
-  // Mastodon SSE 이벤트: update/delete/notification/filters_changed ...
+  es.addEventListener('open', () => {});
+  es.addEventListener('error', () => {});
   es.addEventListener('update', async (evt) => {
-    if (mode !== 'home') return; // 홈에서만 실시간 반영
+    if (mode !== 'home') return;
     try {
       const st = JSON.parse(evt.data);
       await prependStatus(st);
-
-      // 홈 최신 id 갱신 (자동 새로고침 로직과도 호환)
       lastTopId = postKey(st) || lastTopId;
     } catch {}
   });
-
-  // 삭제 이벤트가 오면 DOM에서 지우기(선택)
   es.addEventListener('delete', (evt) => {
     const id = evt.data?.trim();
     if (!id) return;
@@ -1125,13 +950,7 @@ function startStream() {
     if (article) article.remove();
   });
 }
-
-function stopStream() {
-  if (!es) return;
-  try { es.close(); } catch {}
-  es = null;
-}
-
+function stopStream() { if (!es) return; try { es.close(); } catch {} es = null; }
 
 /* =========================
    UI bindings
@@ -1142,31 +961,24 @@ document.getElementById('tab-home').addEventListener('click', async () => {
   feedEl.innerHTML = '';
   await loadPage(true);
   await autofillIfNeeded();
-  if (source === 'masto') startStream();     // ⬅️ 홈 진입 시 스트리밍 시작
+  if (source === 'masto') startStream();
   else if (source === 'misskey') startPolling();
 });
-
 document.getElementById('tab-fav').addEventListener('click', async () => {
   mode = 'fav';
-  stopPolling();      // ⬅️ 홈 이탈 시 정지
+  stopPolling();
   cursor = null; feedEl.innerHTML = '';
   await loadPage(true); await autofillIfNeeded();
 });
-
-// 이름(계정 칩) 클릭 → 내 글
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest?.('#acct-btn');
   if (!btn) return;
   mode = 'mine';
-  stopStream();      // ⬅️ 홈 이탈 시 정지
-  stopPolling();
-  cursor = null;
-  feedEl.innerHTML = '';
+  stopStream(); stopPolling();
+  cursor = null; feedEl.innerHTML = '';
   await loadPage(true);
   await autofillIfNeeded();
 });
-
-
 document.getElementById('logout').addEventListener('click', async () => {
   try {
     if (source === 'masto') await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
@@ -1176,14 +988,12 @@ document.getElementById('logout').addEventListener('click', async () => {
   }
 });
 
-// 💬 댓글 토글 (Mastodon 전용)
-const threadCache = new Map(); // id -> HTML string (캐시)
-
+// 💬 댓글 토글
+const threadCache = new Map();
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('.reply-toggle');
   if (!btn) return;
 
-  // 소스가 Misskey면 아직 미구현
   if (source !== 'masto') {
     alert('Misskey 대화 보기는 준비 중이에요!');
     return;
@@ -1192,24 +1002,17 @@ document.addEventListener('click', async (ev) => {
   const id = btn.dataset.id;
   if (!id) return;
 
-  // 이 글 카드 아래의 thread 컨테이너 찾기
-  // (가장 가까운 article 다음 형제로 thread가 있습니다)
   const article = btn.closest('article');
   let threadEl = article?.querySelector(`.thread[data-for="${CSS.escape(id)}"]`);
-  if (!threadEl) {
-    // 혹시 못 찾으면 전체에서 탐색
-    threadEl = document.querySelector(`.thread[data-for="${CSS.escape(id)}"]`);
-  }
+  if (!threadEl) threadEl = document.querySelector(`.thread[data-for="${CSS.escape(id)}"]`);
   if (!threadEl) return;
 
-  // 토글: 펼쳐져 있으면 접기
   if (!threadEl.hasAttribute('hidden')) {
     threadEl.setAttribute('hidden', '');
     btn.title = 'Show replies';
     return;
   }
 
-  // 펼치기: 캐시 있으면 즉시 사용
   if (threadCache.has(id)) {
     threadEl.innerHTML = threadCache.get(id);
     threadEl.removeAttribute('hidden');
@@ -1217,12 +1020,10 @@ document.addEventListener('click', async (ev) => {
     return;
   }
 
-  // 로딩 표시
   threadEl.innerHTML = `<div class="meta">불러오는 중…</div>`;
   threadEl.removeAttribute('hidden');
 
   try {
-    // 백엔드 프록시로 컨텍스트 요청
     const data = await jfetch(`/api/status/context?id=${encodeURIComponent(id)}`);
     const desc = Array.isArray(data?.descendants) ? data.descendants : [];
     if (!desc.length) {
@@ -1232,18 +1033,14 @@ document.addEventListener('click', async (ev) => {
       return;
     }
 
-    // 후손들을 시간순으로 정렬(원한다면)
     desc.sort((a,b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
-    // 각 댓글을 기존 렌더러로 렌더
     const parts = [];
     for (const st of desc) {
       try {
         const html = await renderPostHTML(st, { source: 'masto' });
         parts.push(html);
-      } catch {
-        // 실패한 건 건너뜀
-      }
+      } catch {}
     }
     const htmlAll = parts.join('');
     threadEl.innerHTML = htmlAll || `<div class="meta">표시할 대화가 없습니다.</div>`;
@@ -1255,7 +1052,7 @@ document.addEventListener('click', async (ev) => {
   }
 });
 
-// 좋아요(⭐) 버튼 클릭
+// ⭐ 좋아요
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('.like-btn');
   if (!btn) return;
@@ -1275,15 +1072,10 @@ document.addEventListener('click', async (ev) => {
       body: JSON.stringify({ id })
     });
 
-    // 응답 본문(JSON 우선)
     let payload = null;
     const ct = res.headers.get('content-type') || '';
-    if (ct.includes('application/json')) {
-      payload = await res.json().catch(() => null);
-    } else {
-      // 실패시 디버깅용 텍스트도 확보
-      payload = await res.text().catch(() => '');
-    }
+    if (ct.includes('application/json')) payload = await res.json().catch(() => null);
+    else payload = await res.text().catch(() => '');
 
     if (!res.ok) {
       console.error('like failed', res.status, payload);
@@ -1292,12 +1084,9 @@ document.addEventListener('click', async (ev) => {
       return;
     }
 
-    // ✅ 성공: 표시 숫자 결정
-    // 서버가 favourites_count를 주면 그 값 사용, 없으면 현재에서 +1
     let newCount;
-    if (payload && typeof payload.favourites_count === 'number') {
-      newCount = payload.favourites_count;
-    } else {
+    if (payload && typeof payload.favourites_count === 'number') newCount = payload.favourites_count;
+    else {
       const m = (orig.match(/^⭐\s*(\d+)/));
       const cur = m ? parseInt(m[1], 10) : 0;
       newCount = cur + 1;
@@ -1312,15 +1101,13 @@ document.addEventListener('click', async (ev) => {
     btn.textContent = '⭐×';
     btn.title = 'Network error';
   } finally {
-    // ⛔ 원래 텍스트로 되돌리지 않음
     btn.disabled = false;
   }
 });
 
-
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
-// infinite scroll (disconnect 지원)
+// infinite scroll
 io = new IntersectionObserver(async (entries) => {
   for (const e of entries) {
     if (e.isIntersecting) await loadPage();
@@ -1334,7 +1121,6 @@ io.observe(document.getElementById('sentinel'));
   await loadPage(true);
   await autofillIfNeeded();
 
-  // 첫 진입이 홈이면 폴링 시작
   if (mode === 'home') {
     if (source === 'masto') startStream();
     else if (source === 'misskey') startPolling();
