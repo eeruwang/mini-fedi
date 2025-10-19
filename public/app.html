@@ -602,6 +602,8 @@ async function renderPostHTML(post, opts) {
       if (post && post._mkDebug?.host) return post._mkDebug.host;
       try { if (base && base._mkDebug?.apUri) return new URL(base._mkDebug.apUri).host; } catch {}
       try { if (post && post._mkDebug?.apUri) return new URL(post._mkDebug.apUri).host; } catch {}
+      try { if (base?.url) return new URL(base.url).host; } catch {}
+      try { if (base?.uri) return new URL(base.uri).host; } catch {}
       return null;
     };
     const mkHostGuess = deriveHost();
@@ -751,6 +753,11 @@ async function renderPostHTML(post, opts) {
     const rx = post?.reactions || {};
     const rxBadges = [];
     if (rx && typeof rx === 'object') {
+      // 이 노트가 속한 "원글 호스트" 추론 (원격 리액션에 host가 없을 때 폴백)
+      const postHost =
+        (post?._mkDebug && post._mkDebug.host) ||
+        (() => { try { return new URL(post?.url || post?.uri || '').host } catch { return null } })() ||
+        host; // 최후 폴백: 내 로그인 호스트
       for (const key of Object.keys(rx)) {
         const count = rx[key];
         const parsed = parseQualifiedEmoji(key);
@@ -758,9 +765,23 @@ async function renderPostHTML(post, opts) {
           rxBadges.push(`<span class="badge">${parsed.char} ${count}</span>`);
           continue;
         }
-        const em = emojiList.find(e => e.name === (parsed.name || ''));
-        if (em?.url) rxBadges.push(`<span class="badge"><img src="${em.url}" alt=":${parsed.name}:" />${count}</span>`);
-        else rxBadges.push(`<span class="badge">:${parsed.name}: ${count}</span>`);
+        let em = emojiList.find(e => e.name === (parsed.name || ''));
+        // 1) 리액션 키에 host가 명시되면 그 호스트의 이모지 목록을 조회
+        if (!em && parsed.host) {
+          const remoteList = await getMisskeyEmojis(parsed.host).catch(() => []);
+          em = remoteList.find(e => e.name === (parsed.name || ''));
+        }
+        // 2) host가 없으면 "그 노트가 속한 호스트"에서 조회
+        if (!em && postHost) {
+          const list = await getMisskeyEmojis(postHost).catch(() => []);
+          em = list.find(e => e.name === (parsed.name || ''));
+        }
+
+        if (em?.url) {
+          rxBadges.push(`<span class="badge"><img src="${em.url}" alt=":${parsed.name}:" />${count}</span>`);
+        } else {
+          rxBadges.push(`<span class="badge">:${parsed.name}: ${count}</span>`);
+        }
       }
     }
 
