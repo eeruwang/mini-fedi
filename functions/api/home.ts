@@ -286,12 +286,15 @@ async function getNotesShow(env: Env, host: string, noteId: string) {
 }
 
 // ---------- main ----------
+// ... (파일 상단 유틸/정규화/인덱싱 함수들은 네가 올린 그대로 유지)
+
+// ---------- main ----------
 export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   const t0 = Date.now();
   const { request, env } = ctx;
   const cookies = parseCookies(request);
   const apToken = cookies["ap_token"];
-  const apInst = cookies["ap_inst"];
+  const apInst  = cookies["ap_inst"];
 
   if (!apToken || !apInst) {
     return new Response(JSON.stringify({ error: "not logged in" }), {
@@ -300,27 +303,25 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     });
   }
 
-  const url = new URL(request.url);
+  const url   = new URL(request.url);
   const max_id = url.searchParams.get("max_id") || "";
-  const debug = url.searchParams.get("debug") === "1";
+  const debug  = url.searchParams.get("debug") === "1" || url.searchParams.get("debug") === "2";
+  const trace  = url.searchParams.get("debug") === "2" || url.searchParams.get("mktrace") === "1";
 
   // 병합 on/off, 병합 최대 개수
-  const merge = url.searchParams.get("merge") !== "0"; // 기본 on
-  const mergeLimit = Math.max(0, Number(url.searchParams.get("merge_limit") || "6")); // 기본 6
+  const merge       = url.searchParams.get("merge") !== "0"; // 기본 on
+  const mergeLimit  = Math.max(0, Number(url.searchParams.get("merge_limit") || "6")); // 기본 6
 
-  // 1) Mastodon 홈 타임라인
+  // 1) Mastodon 홈
   const mastoURL = new URL(`https://${apInst}/api/v1/timelines/home`);
   if (max_id) mastoURL.searchParams.set("max_id", max_id);
+  const res = await fetchWithTimeout(mastoURL.toString(), {
+    headers: { authorization: `Bearer ${apToken}` },
+  }, 5000);
 
-  const res = await fetchWithTimeout(
-    mastoURL.toString(),
-    { headers: { authorization: `Bearer ${apToken}` } },
-    5000,
-  );
   if (!res.ok) {
     return new Response(JSON.stringify({ error: `mastodon ${res.status}` }), {
-      status: 502,
-      headers: { "content-type": "application/json" },
+      status: 502, headers: { "content-type": "application/json" },
     });
   }
 
@@ -331,9 +332,17 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     (statuses.length ? statuses[statuses.length - 1].id : null);
 
   // 2) Misskey 리액션 병합
-  let mergedCount = 0,
-    triedCount = 0,
-    errorCount = 0;
+  let mergedCount = 0, triedCount = 0, errorCount = 0;
+
+  // 디버그 카운터(헤더용)
+  const counters = {
+    alias_hits: 0,
+    meta_hits: 0,
+    remote_hits: 0,
+    tag_hits: 0,
+    unicode_pass: 0,
+    custom_without_url: 0,
+  };
 
   if (merge) {
     type Job = { st: any; apUri: string; host: string; noteId: string | null };
@@ -344,14 +353,10 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
         if (debug) st._mkDebug = { stage: "skip_no_ap_uri" };
         continue;
       }
-      const noteId = extractMisskeyNoteIdFromApUri(apUri);
       const host = new URL(apUri).host.toLowerCase();
+      const noteId = extractMisskeyNoteIdFromApUri(apUri);
       if (!noteId) {
-        if (debug) st._mkDebug = {
-          stage: "skip_non_misskey_shape",
-          apUri,
-          host,
-        };
+        if (debug) st._mkDebug = { stage: "skip_non_misskey_shape", apUri, host };
         continue;
       }
       allJobs.push({ st, apUri, host, noteId });
@@ -359,136 +364,166 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
 
     const jobs = allJobs.slice(0, mergeLimit);
 
-    // 해당 호스트들의 /api/meta 미리 warm-up
-    const uniqueHosts = Array.from(new Set(jobs.map((j) => j.host)));
-    await Promise.all(uniqueHosts.map((h) => getMisskeyMeta(env, h).catch(() => null)));
+    const uniqueHosts = Array.from(new Set(jobs.map(j => j.host)));
+    await Promise.all(uniqueHosts.map(h => getMisskeyMeta(env, h).catch(() => null)));
 
     const run = limiter(6);
 
-    await Promise.all(
-      jobs.map((job) =>
-        run(async () => {
-          const st = job.st;
-          triedCount++;
-          try {
-            let apRes = await getApShow(env, job.host, job.apUri);
-            let obj = apRes.data?.object || apRes.data || null;
+    await Promise.all(jobs.map(job => run(async () => {
+      const st = job.st;
+      triedCount++;
+      try {
+        let apRes = await getApShow(env, job.host, job.apUri);
+        let obj   = apRes.data?.object || apRes.data || null;
 
-            if (!obj && job.noteId) {
-              const { status, data } = await getNotesShow(env, job.host, job.noteId);
-              if (status === 200 && data) {
-                obj = data;
-                if (debug)
-                  st._mkDebug = {
-                    stage: "fallback_notes_show_ok",
-                    apUri: job.apUri,
-                    host: job.host,
-                    noteId: job.noteId,
-                  };
-              } else if (debug) {
-                st._mkDebug = {
-                  stage: "no_ap_object_and_notes_show_failed",
-                  apUri: job.apUri,
-                  host: job.host,
-                  noteId: job.noteId,
-                  status,
-                };
-              }
-            } else if (debug && !st._mkDebug) {
-              st._mkDebug = {
-                stage: apRes.status === 200 ? "ap_show_ok" : "ap_show_failed",
-                status: apRes.status,
-                apUri: job.apUri,
-                host: job.host,
-              };
-            }
-
-            if (!obj) return;
-
-            const reactions = (obj as any)?.reactions || (obj as any)?.reactionCounts || null;
-            if (!reactions || typeof reactions !== "object") {
-              if (debug) st._mkDebug = { ...(st._mkDebug || {}), stage: "no_reactions" };
-              return;
-            }
-
-            const meta = metaMem.get(job.host) || null;
-            const out: Array<{ name: string; url: string | null; count: number; char?: string }> = [];
-
-            for (const k of Object.keys(reactions)) {
-              const count = (reactions as any)[k] ?? 0;
-              if (!count) continue;
-
-              // 0) 원본/정규화
-              const keyNorm = normalizeName(k);
-              let kindInfo = parseMkReactionKey(k); // 내부에서 정규화 적용
-              if (kindInfo.kind === "custom") {
-                kindInfo = { kind: "custom", name: normalizeName(kindInfo.name), host: normalizeHost(kindInfo.host) };
-              } else {
-                kindInfo = { kind: "unicode", name: keyNorm, host: null };
-              }
-
-              // 1) 별칭(알리아스) 우선
-              const alias = meta ? resolveAliasFromMeta(meta, keyNorm) : null;
-              if (alias?.kind === "custom") {
-                kindInfo = {
-                  kind: "custom",
-                  name: normalizeName(alias.name!),
-                  host: normalizeHost(alias.host) || kindInfo.host,
-                };
-              } else if (alias?.kind === "unicode") {
-                out.push({ name: alias.char!, url: null, count, char: alias.char! });
-                continue;
-              }
-
-              // 2) 콜론 없는 키도 메타에 있으면 custom 취급
-              if (kindInfo.kind === "unicode" && meta && resolveEmojiUrlFromMeta(meta, keyNorm)) {
-                kindInfo = { kind: "custom", name: keyNorm, host: null };
-              }
-
-              if (kindInfo.kind === "unicode") {
-                // 진짜 유니코드(커스텀 아님)
-                out.push({ name: kindInfo.name, url: null, count, char: kindInfo.name });
-              } else {
-                const name = normalizeName(kindInfo.name);
-                // 1) 원글 호스트 meta
-                let url = meta ? resolveEmojiUrlFromMeta(meta, name) : null;
-
-                // 2) 별칭/키에 원격 호스트가 있으면 그 호스트 meta에서 찾기
-                if (!url && kindInfo.host) {
-                  url = await getEmojiUrlFromHost(env, kindInfo.host, name);
-                }
-
-                // 3) AP 태그로 최후의 수단
-                if (!url) {
-                  url = resolveEmojiUrlFromApTag(obj, name);
-                }
-
-                out.push({ name, url: url || null, count });
-              }
-            }
-
-            if (out.length) {
-              st._mkReactions = out;
-              st._mkHost = normalizeHost(job.host);
-              mergedCount++;
-              if (debug)
-                st._mkDebug = {
-                  ...(st._mkDebug || {}),
-                  stage: st._mkDebug?.stage ?? "ok",
-                  merged: out.length,
-                  host: job.host,
-                };
-            } else if (debug) {
-              st._mkDebug = { ...(st._mkDebug || {}), stage: "empty_after_parse" };
-            }
-          } catch (e: any) {
-            errorCount++;
-            if (debug) st._mkDebug = { stage: "error", message: String(e) };
+        if (!obj && job.noteId) {
+          const { status, data } = await getNotesShow(env, job.host, job.noteId);
+          if (status === 200 && data) {
+            obj = data;
+            if (debug) st._mkDebug = {
+              stage: "fallback_notes_show_ok",
+              apUri: job.apUri, host: job.host, noteId: job.noteId,
+            };
+          } else if (debug) {
+            st._mkDebug = {
+              stage: "no_ap_object_and_notes_show_failed",
+              apUri: job.apUri, host: job.host, noteId: job.noteId, status,
+            };
           }
-        }),
-      ),
-    );
-  } // if(merge)
+        } else if (debug && !st._mkDebug) {
+          st._mkDebug = {
+            stage: apRes.status === 200 ? "ap_show_ok" : "ap_show_failed",
+            status: apRes.status, apUri: job.apUri, host: job.host,
+          };
+        }
+
+        if (!obj) return;
+
+        const reactions = (obj as any)?.reactions || (obj as any)?.reactionCounts || null;
+        if (!reactions || typeof reactions !== "object") {
+          if (debug) st._mkDebug = { ...(st._mkDebug||{}), stage: "no_reactions" };
+          return;
+        }
+
+        const meta = metaMem.get(job.host) || null;
+        const out: Array<{ name: string; url: string | null; count: number; char?: string }> = [];
+        const traceArr: any[] = []; // 리액션별 디버그
+
+        for (const rawKey of Object.keys(reactions)) {
+          const count = (reactions as any)[rawKey] ?? 0;
+          if (!count) continue;
+
+          const step: any = { key: rawKey, count };
+          try {
+            const keyNorm = normalizeName(rawKey);
+            step.keyNorm = keyNorm;
+
+            let kindInfo = parseMkReactionKey(rawKey);  // 내부에서 정규화
+            step.parsed = kindInfo;
+
+            // ① 별칭
+            const alias = meta ? resolveAliasFromMeta(meta, keyNorm) : null;
+            if (alias) step.alias = alias;
+
+            if (alias?.kind === "unicode") {
+              counters.alias_hits++;
+              counters.unicode_pass++;
+              out.push({ name: alias.char!, url: null, count, char: alias.char! });
+              step.decision = "alias_unicode";
+              trace && traceArr.push(step);
+              continue;
+            }
+            if (alias?.kind === "custom") {
+              counters.alias_hits++;
+              kindInfo = {
+                kind: "custom",
+                name: normalizeName(alias.name!),
+                host: normalizeHost(alias.host) || kindInfo.host,
+              };
+              step.decision = "alias_custom";
+            }
+
+            // ② 콜론 없이도 메타에 있으면 custom
+            if (kindInfo.kind === "unicode" && meta && resolveEmojiUrlFromMeta(meta, keyNorm)) {
+              kindInfo = { kind: "custom", name: keyNorm, host: null };
+              step.metaSuggestsCustom = true;
+            }
+
+            if (kindInfo.kind === "unicode") {
+              counters.unicode_pass++;
+              out.push({ name: kindInfo.name, url: null, count, char: kindInfo.name });
+              step.decision ??= "unicode";
+              trace && traceArr.push(step);
+              continue;
+            }
+
+            // custom: URL 해석 시도
+            const name = normalizeName(kindInfo.name);
+            step.name = name;
+
+            // 1) 원글 호스트 meta
+            let urlHit: string | null = meta ? resolveEmojiUrlFromMeta(meta, name) : null;
+            if (urlHit) {
+              counters.meta_hits++;
+              step.urlFrom = "meta";
+              step.url = urlHit;
+            }
+
+            // 2) 별칭/키에 호스트 있으면 그 호스트 meta
+            if (!urlHit && kindInfo.host) {
+              const h = normalizeHost(kindInfo.host)!;
+              urlHit = await getEmojiUrlFromHost(env, h, name);
+              if (urlHit) {
+                counters.remote_hits++;
+                step.urlFrom = "remote_meta";
+                step.remoteHostTried = h;
+                step.url = urlHit;
+              }
+            }
+
+            // 3) AP 태그
+            if (!urlHit) {
+              const tagUrl = resolveEmojiUrlFromApTag(obj, name);
+              if (tagUrl) {
+                counters.tag_hits++;
+                step.urlFrom = "ap_tag";
+                step.url = tagUrl;
+                urlHit = tagUrl;
+              }
+            }
+
+            if (!urlHit) {
+              counters.custom_without_url++;
+              step.urlFrom = "none";
+              step.reason = "no_url_from_meta_remote_tag";
+            }
+
+            out.push({ name, url: urlHit || null, count });
+            trace && traceArr.push(step);
+          } catch (err) {
+            step.error = String(err);
+            trace && traceArr.push(step);
+          }
+        }
+
+        if (out.length) {
+          st._mkReactions = out;
+          st._mkHost      = job.host.toLowerCase();
+          mergedCount++;
+          if (debug) {
+            st._mkDebug = { ...(st._mkDebug||{}), stage: st._mkDebug?.stage ?? "ok", merged: out.length, host: job.host };
+            if (trace) st._mkTrace = traceArr; // ← ✨ 리액션별 상세 트레이스
+          }
+        } else if (debug) {
+          st._mkDebug = { ...(st._mkDebug||{}), stage: "empty_after_parse" };
+          if (trace) st._mkTrace = traceArr;
+        }
+      } catch (e:any) {
+        errorCount++;
+        if (debug) st._mkDebug = { stage: "error", message: String(e) };
+      }
+    })));
+  } // merge
 
   const elapsed = Date.now() - t0;
   const body = JSON.stringify({ items: statuses, next_max_id });
@@ -496,7 +531,9 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     headers: {
       "content-type": "application/json",
       "x-mk-merge-summary": `tried=${triedCount}; merged=${mergedCount}; errors=${errorCount}`,
+      "x-mk-merge-counters": JSON.stringify(counters),                 // ← ✨ 경로별 히트 통계
       "x-mk-merge-ms": String(elapsed),
     },
   });
 };
+

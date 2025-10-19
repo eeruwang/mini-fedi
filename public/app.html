@@ -693,7 +693,8 @@ async function renderPostHTML(post, opts) {
     `;
 
 
-    const debugOn = new URL(location.href).searchParams.get('debug') === '1';
+    const debugOn = new URL(location.href).searchParams.get('debug') === '1'
+      || new URL(location.href).searchParams.get('debug') === '2';
     const debugHTML = (debugOn && base?._mkDebug)
       ? `<pre class="meta" style="white-space:pre-wrap;margin-top:8px;border:1px dashed var(--border);padding:8px;border-radius:8px;opacity:0.8;">_mkDebug: ${escapeHTML(JSON.stringify(base._mkDebug, null, 2))}</pre>`
       : '';
