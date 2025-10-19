@@ -417,6 +417,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   const max_id = url.searchParams.get("max_id") || "";
   const debug = url.searchParams.get("debug") === "1";
   const trace = url.searchParams.get("trace") === "1";
+  const forceAllReactions = url.searchParams.get("mk_force") === "1"; // ⬅️ 추가
 
   // 병합 on/off, 병합 최대 개수
   const merge = url.searchParams.get("merge") !== "0"; // 기본 on
@@ -530,6 +531,11 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
               return;
             }
 
+            // ✅ 여기서 reactions 객체가 존재함을 확인했으므로 바로 아래에 추가!
+            if (debug) {
+              st._mkDebug = { ...(st._mkDebug || {}), reactions_raw: reactions };
+            }
+
             const meta = metaMem.get(job.host) || null;
 
             // ---------- 교체된 리액션 파싱 블록 (host 포함/정규화/트레이스) ----------
@@ -546,7 +552,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
 
             for (const rawKey of Object.keys(reactions)) {
               const count = (reactions as any)[rawKey] ?? 0;
-              if (!count) continue;
+              if (!count && !forceAllReactions) continue;
 
               const step: any = { key: rawKey, count };
               try {
