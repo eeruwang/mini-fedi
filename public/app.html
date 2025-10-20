@@ -676,66 +676,63 @@ function isMentionAnchor(a) {
 }
 
 /** HTML 문자열에서 a들을 순회하면서 (1) 멘션은 칩으로 교체 (2) “외부 링크”만 수집 */
+/** HTML 문자열에서 a들을 순회하면서 (1) 멘션은 칩으로 교체 (2) “외부 링크”만 수집 */
 function transformContentAndCollectExternalLinks(html, post, source) {
   const tpl = document.createElement('template');
   tpl.innerHTML = html;
   const root = tpl.content;
 
+  // Mastodon이면 서버가 준 mentions 메타 사용
   const mentionsMeta = source === 'masto' && Array.isArray(post?.mentions) ? post.mentions : [];
 
   function makeMentionChip(a) {
-    // 기본 추출
-    let display = (a.textContent || '').replace(/^@/, '');
     const acctUrl = a.getAttribute('href') || '';
+    let display = (a.textContent || '').replace(/^@/, '');
+    let avatar = '';
+    let replyAcct = (a.textContent || '').trim();
+    if (!replyAcct.startsWith('@')) replyAcct = '@' + replyAcct;
 
-    // 칩: 링크지만 버튼처럼 보이지 않게 (CSS 이미 있음)
+    // 메타 매칭으로 아바타/표시이름 보강
+    if (mentionsMeta.length) {
+      const hit = mentionsMeta.find(m =>
+        (m?.url && acctUrl && m.url === acctUrl) ||
+        (m?.acct && replyAcct.includes(m.acct)) ||
+        (m?.username && replyAcct.includes('@' + m.username))
+      );
+      if (hit) {
+        display   = hit.display_name || hit.username || display;
+        avatar    = hit.avatar_static || hit.avatar || '';
+        replyAcct = hit.acct ? '@' + hit.acct : replyAcct;
+      }
+    }
+
+    // 칩: 링크지만 버튼처럼 보이지 않게 (CSS로 처리)
     const chip = document.createElement('a');
     chip.className = 'mention-chip';
     if (acctUrl) { chip.href = acctUrl; chip.target = '_blank'; chip.rel = 'noopener noreferrer'; }
+    chip.innerHTML =
+      `${avatar ? `<img src="${avatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">` : ''}` +
+      `<span>${escapeHTML(display)}</span>`;
 
-    // @user@host (텍스트 기준) → reply 프리필용
-    let acct = (a.textContent || '').trim();
-    if (!acct.startsWith('@')) acct = '@' + acct;
-
-    chip.innerHTML = `<span>${escapeHTML(display)}</span>`;
-    // 옆에 “댓글” 링크
+    // 옆에 “댓글” 링크 (컴포저 오픈 & @프리필 용)
     const reply = document.createElement('a');
     reply.href = '#';
     reply.className = 'mention-reply';
     reply.textContent = '댓글';
-    reply.dataset.replyAcct = acct;
+    reply.dataset.replyAcct = replyAcct;
 
     a.replaceWith(chip);
     chip.after(reply);
   }
 
-
-    // 2) 칩 생성 (+ 아바타 없으면 나중에 hydrate용 data-* 심기)
-    const span = document.createElement('span');
-    span.className = 'mention-chip';
-    // @user@host 추출
-    let user = '', host = '';
-    const m = (a.textContent||'').trim().match(/^@([^@]+)@([^@\s]+)/);
-    if (m) { user = m[1]; host = m[2]; }
-
-    if (!avatar && user && host) {
-      span.dataset.user = user;
-      span.dataset.host = host;
-    }
-
-    span.innerHTML = `${avatar ? `<img src="${avatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">` : ''}<span>${escapeHTML(display)}</span>`;
-    a.replaceWith(span);
-  }
-
   const externalLinks = [];
   root.querySelectorAll('a[href]').forEach(a => {
     const href = a.getAttribute('href') || '';
-    if (isMentionAnchor(a)) {         // 멘션이면 칩 처리
-      makeMentionChip(a);
-      return;
-    }
+    // 멘션이면 칩으로 교체
+    if (isMentionAnchor(a)) { makeMentionChip(a); return; }
+    // 외부 링크만 수집하되, 프로필 URL은 카드 금지
     if (/^https?:\/\//i.test(href)) {
-      if (isAccountProfileURL(href)) return; // ✅ 프로필 URL은 카드 금지
+      if (isAccountProfileURL(href)) return;
       externalLinks.push(href);
     }
   });
