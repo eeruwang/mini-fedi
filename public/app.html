@@ -73,6 +73,27 @@
       border-radius: 999px; background: var(--card);
     }
 
+    /* ====== Mention chip ====== */
+    .mention-chip{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:2px 8px;
+      border:1px solid var(--border);
+      background: color-mix(in oklab, var(--card) 92%, transparent);
+      border-radius:999px;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .mention-chip img{
+      width:16px;
+      height:16px;
+      border-radius:999px;
+      object-fit:cover;
+      background:#222;
+    }
+
+
     /* ====== Post card ====== */
     .post {
       padding: 14px 16px;
@@ -581,6 +602,136 @@ try {
   });
 } catch {}
 
+/* ===== Mentions & Link-card helpers ===== */
+
+/** mastodon/misskey 프로필 URL 패턴인지 판별 */
+function isAccountProfileURL(href) {
+  try {
+    const u = new URL(href, location.origin);
+    // /@name  혹은  /users/ID  같은 프로필 경로
+    return /^\/@[^/]+\/?$/.test(u.pathname) || /^\/users\/[^/]+\/?$/.test(u.pathname);
+  } catch { return false; }
+}
+
+/** a 요소가 멘션(계정 링크)인지 판별 */
+function isMentionAnchor(a) {
+  const href = a.getAttribute('href') || '';
+  const txt = (a.textContent || '').trim();
+  if (a.classList?.contains('mention')) return true;
+  if (txt.startsWith('@')) return true;
+  if (isAccountProfileURL(href)) return true;
+  return false;
+}
+
+/** HTML 문자열에서 a들을 순회하면서 (1) 멘션은 칩으로 교체 (2) “외부 링크”만 수집 */
+function transformContentAndCollectExternalLinks(html, post, source) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const root = tpl.content;
+
+  // Mastodon의 mentions 배열 사용(표시이름/아바타 매칭용)
+  const mentionsMeta = source === 'masto' && Array.isArray(post?.mentions) ? post.mentions : [];
+
+  /** 멘션 칩 만들기 */
+  function makeMentionChip(a) {
+    // a가 가진 정보로 기본 초기화
+    let display = (a.textContent || '').replace(/^@/, '');
+    let avatar = '';
+    let acctUrl = a.getAttribute('href') || '';
+
+    // mentions 매타데이터로 보강
+    if (mentionsMeta.length) {
+      // href 매칭, 아니면 텍스트 포함으로 느슨 매칭
+      const hit = mentionsMeta.find(m =>
+        (m?.url && acctUrl && m.url === acctUrl) ||
+        (m?.acct && (a.textContent||'').includes(m.acct)) ||
+        (m?.username && (a.textContent||'').includes(m.username))
+      );
+      if (hit) {
+        display = hit.display_name || hit.username || display;
+        avatar  = hit.avatar_static || hit.avatar || '';
+      }
+    }
+
+    const span = document.createElement('span');
+    span.className = 'mention-chip';
+    span.innerHTML = `${avatar ? `<img src="${avatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">` : ''}<span>${escapeHTML(display)}</span>`;
+    a.replaceWith(span);
+  }
+
+  const externalLinks = [];
+  root.querySelectorAll('a[href]').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    // 멘션이면 칩으로 교체하고, 링크카드 대상에서 제외
+    if (isMentionAnchor(a)) {
+      makeMentionChip(a);
+      return;
+    }
+    // 외부 http/https 링크만 카드 후보로
+    if (/^https?:\/\//i.test(href)) {
+      externalLinks.push(href);
+    }
+  });
+
+  // HTML 재조립
+  const outHTML = root.childNodes.length
+    ? Array.from(root.childNodes).map(n => n.outerHTML || n.textContent).join('')
+    : html;
+
+  return { html: outHTML, externalLinks };
+}
+
+// === Misskey 멘션 → 아바타 칩화 ===
+const mentionProfileCache = new Map(); // "user@host" -> { display, avatar }
+
+/** 평문(@u@h)을 <span class="mention-chip" data-user data-host>로 치환(아바타는 나중에 주입) */
+function chipifyPlainMentions(html='') {
+  return html.replace(
+    /(^|\s)@([a-z0-9_\.]+)@([a-z0-9\.\-]+)\b/gi,
+    (m, pre, user, host) =>
+      `${pre}<span class="mention-chip" data-user="${user}" data-host="${host}"><span>${user}</span></span>`
+  );
+}
+
+/** 서버 프록시로 프로필 해오고(성공 시) 표시이름/아바타 리턴 */
+async function resolveMisskeyProfile(user, host) {
+  const key = `${user}@${host}`.toLowerCase();
+  if (mentionProfileCache.has(key)) return mentionProfileCache.get(key);
+
+  // ⚠️ 백엔드에 맞춰 경로 수정하세요. (예: /api/mk/user?username=&host=)
+  try {
+    const data = await jfetch(`/api/mk/user?username=${encodeURIComponent(user)}&host=${encodeURIComponent(host)}`);
+    const res = {
+      display: (data?.name || data?.username || user) + '',
+      avatar: (data?.avatarUrl || data?.avatar || '') + ''
+    };
+    mentionProfileCache.set(key, res);
+    return res;
+  } catch {
+    const res = { display: user, avatar: '' };
+    mentionProfileCache.set(key, res);
+    return res;
+  }
+}
+
+/** content 컨테이너 안의 mention-chip들을 아바타/표시이름으로 수화(hydrate) */
+async function hydrateMisskeyMentions(containerId) {
+  const root = document.getElementById(containerId);
+  if (!root) return;
+  const chips = root.querySelectorAll('.mention-chip[data-user][data-host]');
+  await Promise.all(Array.from(chips).map(async chip => {
+    if (chip.dataset.hydrated === '1') return;
+    const user = chip.getAttribute('data-user') || '';
+    const host = chip.getAttribute('data-host') || '';
+    const prof = await resolveMisskeyProfile(user, host);
+    chip.innerHTML =
+      `${prof.avatar ? `<img src="${prof.avatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">` : ''}` +
+      `<span>${escapeHTML(prof.display)}</span>`;
+    chip.dataset.hydrated = '1';
+  }));
+}
+
+
 /* =========================
    Emoji map & resolution (Misskey & Masto)
    ========================= */
@@ -826,6 +977,7 @@ document.addEventListener('visibilitychange', () => {
   else if (mode === 'home' && source === 'misskey') startPolling();
 });
 
+
 /* =========================
    Media rendering
    ========================= */
@@ -1066,7 +1218,10 @@ async function renderPostHTML(post, opts) {
     const avatarURL = acc.avatar_static || acc.avatar || '';
 
     const mastoEmojiMap = buildMastoEmojiMap(base);
-    const contentHTML = renderEmojisToHTML(base?.content || '', mastoEmojiMap);
+    const rawContent = base?.content || '';
+    const emojiHTML  = renderEmojisToHTML(rawContent, mastoEmojiMap);
+    const { html: contentHTML, externalLinks } =
+      transformContentAndCollectExternalLinks(emojiHTML, base, 'masto');
     const mediaHTML = renderMedia(base);
 
     // 🔗 링크 카드: 본문 HTML에서 URL 추출 → 스켈레톤 즉시, 실제 OG는 후순위
@@ -1166,10 +1321,18 @@ async function renderPostHTML(post, opts) {
     const emojiList = await getMisskeyEmojis(host);
     const text = post?.text || '';
     const textHTML = renderEmojisToHTML(escapeHTML(text).replace(/\n/g, '<br>'), emojiList);
+    // ✅ 추가: 평문 멘션을 칩으로 마킹(초기엔 아바타 없이)
+    textHTML = chipifyPlainMentions(textHTML);
+    // ✅ 2. content 블록 id 생성
+    const contentId = `cnt-${post?.id || Math.random().toString(36).slice(2)}`;
     const mediaHTML = renderMedia(post);
 
     // 🔗 링크 카드: Misskey는 평문에서 URL 추출
     const linkCardsHTML = await attachLinkCards({ base: null, post, source: 'misskey', contentHTML: textHTML });
+
+    // ✅ 3. 이 시점에 “DOM 붙은 뒤 실행” 스케줄
+    defer(() => hydrateMisskeyMentions(contentId));
+
 
     const rx = post?.reactions || {};
     const rxBadges = [];
@@ -1216,7 +1379,7 @@ async function renderPostHTML(post, opts) {
             <div class="meta">${new Date(createdAt).toLocaleString()}</div>
           </div>
         </div>
-        <div class="content">${textHTML}</div>
+        <div class="content" id="${contentId}">${textHTML}</div>
         ${mediaHTML}
         ${linkCardsHTML}
         <div class="reactions">${rxBadges.join('')}</div>
