@@ -454,7 +454,7 @@ function parseQualifiedEmoji(raw = '') {
 
 /* ---- misskey emoji list fetch (via backend proxy) ---- */
 const EMOJI_LS_PREFIX = 'mkEmoji:v1:';
-const EMOJI_LS_TTL_MS = 24 * 60 * 60 * 1000;
+const EMOJI_LS_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7일
 
 function lsLoadEmoji(host) {
   try {
@@ -694,6 +694,46 @@ function renderMedia(post) {
   return pieces.length ? `<div class="media">${pieces.join('')}</div>` : '';
 }
 
+// 수집: 목록에서 이모지 호스트 후보 뽑기
+function collectEmojiHostsFromItems(items) {
+  const out = new Set();
+  for (const st of items || []) {
+    // 서버가 달아준 원글 호스트
+    if (st?._mkHost) out.add(normHost(st._mkHost));
+
+    // 계정 핸들 도메인
+    const acc = (st?.reblog?.account) || st?.account;
+    if (acc?.acct && acc.acct.includes('@')) out.add(normHost(acc.acct.split('@')[1]));
+
+    // 리액션 안에 host 힌트가 있으면 추가
+    const rxSrc = st?._mkReactions || [];
+    for (const r of rxSrc) {
+      if (r?.host && r.host !== '.') out.add(normHost(r.host));
+      const q = (r?.qualified || r?.name || '').toString();
+      const p = parseQualifiedEmoji(q);
+      if (p.host) out.add(normHost(p.host));
+    }
+  }
+  // 세션 호스트도 후보에
+  if (activeHost) out.add(normHost(activeHost));
+  return Array.from(out).filter(Boolean);
+}
+
+// 예열: 여러 호스트 이모지 리스트를 미리 요청 (동시성 제한)
+const PREFETCH_MAX = 4;
+async function prefetchEmojiHosts(hosts = []) {
+  const list = Array.from(new Set(hosts.map(normHost))).filter(Boolean);
+  let i = 0;
+  const workers = Array.from({ length: Math.min(PREFETCH_MAX, list.length) }, async () => {
+    while (i < list.length) {
+      const h = list[i++]; 
+      try { await getMisskeyEmojis(h); } catch {}
+    }
+  });
+  await Promise.all(workers);
+}
+
+
 /* =========================
    Post card rendering
    ========================= */
@@ -763,7 +803,7 @@ async function buildReactionsHTMLForMasto({ base, post, isMine, faves, boosts, r
     }
   }
 
-  await Promise.all([...hostsToPrefetch].map(h => getMisskeyEmojis(h)));
+  defer(() => prefetchEmojiHosts([...hostsToPrefetch]));
 
   const debugOn = new URL(location.href).searchParams.get('debug') === '1'
                || new URL(location.href).searchParams.get('debug') === '2';
@@ -1136,6 +1176,8 @@ async function loadPage(initial=false) {
 
     const rawItems = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
     let items = rawItems;
+
+    defer(() => prefetchEmojiHosts(collectEmojiHostsFromItems(items)));
 
     const frag = document.createDocumentFragment();
     const placeholders = items.map(() => {
