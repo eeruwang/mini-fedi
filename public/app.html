@@ -243,8 +243,28 @@
     a:hover { text-decoration: underline; }
     :focus-visible { outline: 2px solid color-mix(in oklab, var(--link) 60%, transparent); outline-offset: 2px; }
 
+    /* ====== Link card ====== */
+    .link-cards { margin-top: 10px; display: grid; gap: 8px; }
+    .link-card {
+      display: grid; grid-template-columns: 96px 1fr; gap: 10px;
+      border: 1px solid var(--border); background: var(--card);
+      border-radius: var(--radius-sm); padding: 10px; box-shadow: var(--shadow);
+      text-decoration: none; color: inherit;
+    }
+    .link-card:hover { background: color-mix(in oklab, var(--card) 85%, transparent); }
+    .link-card .thumb {
+      width: 96px; height: 96px; border-radius: 8px; background: #000;
+      object-fit: cover;
+    }
+    .link-card .meta { font-size: 12px; opacity: .75; }
+    .link-card .title { font-weight: 700; line-height: 1.25; margin-bottom: 4px; }
+    .link-card .desc { font-size: 13px; line-height: 1.35; opacity:.85 }
+
     /* ====== Utilities ====== */
-    .muted { color: var(--muted); }
+
+    .muted { 
+      color: var(--muted); 
+    }
 
     .user-chip .avatar-mini,
     .reblog-banner .avatar-mini {
@@ -329,6 +349,147 @@ function pumpReactionQueue() {
     });
   }
 }
+
+/* ===== 링크 프리뷰(OG) 큐/캐시 & 카드 생성기 ===== */
+
+// 프론트 메모리 캐시: 같은 URL은 재사용
+const linkPreviewCache = new Map(); // url -> HTML
+
+// 링크 카드 비동기 큐 (리액션 큐와 동일 패턴)
+const LINK_QUEUE = [];
+let LINK_ACTIVE = 0;
+const LINK_MAX_CONCURRENCY = 3;
+
+function scheduleLinkTask(task) {
+  LINK_QUEUE.push(task);
+  pumpLinkQueue();
+}
+function pumpLinkQueue() {
+  while (LINK_ACTIVE < LINK_MAX_CONCURRENCY && LINK_QUEUE.length) {
+    const t = LINK_QUEUE.shift();
+    LINK_ACTIVE++;
+    defer(async () => {
+      try { await t(); } catch {}
+      LINK_ACTIVE--;
+      pumpLinkQueue();
+    });
+  }
+}
+
+// 본문 HTML에서 <a href> 추출 (Mastodon)
+function extractLinksFromHTML(html='') {
+  const out = new Set();
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  tmp.querySelectorAll('a[href]').forEach(a => {
+    const href = a.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(href)) out.add(href);
+  });
+  return Array.from(out);
+}
+
+// 평문 텍스트에서 URL 추출 (Misskey)
+function extractLinksFromText(text='') {
+  const out = new Set();
+  const re = /\bhttps?:\/\/[^\s<>"']+/gi;
+  let m; while ((m = re.exec(text))) out.add(m[0]);
+  return Array.from(out);
+}
+
+// 스켈레톤 카드 (빠르게 자리만)
+function renderLinkCardSkeleton(url) {
+  try { new URL(url); } catch { return ''; }
+  const u = new URL(url);
+  const host = u.host.replace(/^www\./,'');
+  return `
+    <a class="link-card" href="${url}" target="_blank" rel="noopener noreferrer nofollow">
+      <div style="width:96px;height:96px;border-radius:8px;background:var(--btn-bg);"></div>
+      <div>
+        <div class="meta">${host}</div>
+        <div class="title" style="height:1.2em;background:var(--btn-bg);border-radius:4px;margin:4px 0;"></div>
+        <div class="desc" style="height:2.6em;background:var(--btn-bg);border-radius:4px;"></div>
+      </div>
+    </a>`;
+}
+
+// 최종 카드 HTML
+function renderLinkCardHTML(meta) {
+  const u = new URL(meta.finalUrl || meta.url);
+  const host = (meta.site || u.host.replace(/^www\./,'')).toString();
+  const title = meta.title || u.hostname;
+  const desc = meta.desc || '';
+  const image = meta.image || meta.favicon || '';
+
+  return `
+    <a class="link-card" href="${meta.finalUrl || meta.url}" target="_blank" rel="noopener noreferrer nofollow">
+      ${image ? `<img class="thumb" src="${image}" alt="" loading="lazy" decoding="async" fetchpriority="low">`
+              : `<div class="thumb" style="background:var(--btn-bg)"></div>`}
+      <div>
+        <div class="meta">${escapeHTML(host)}</div>
+        <div class="title">${escapeHTML(title)}</div>
+        ${desc ? `<div class="desc">${escapeHTML(desc)}</div>` : ``}
+      </div>
+    </a>`;
+}
+
+/**
+ * attachLinkCards:
+ *  - 스켈레톤을 먼저 반환 → DOM에 붙은 뒤
+ *  - scheduleLinkTask로 /api/og 호출 후 실제 카드로 교체
+ *  - source: 'masto' | 'misskey'
+ *  - contentHTML: masto의 본문 HTML(이모지 렌더 후)
+ */
+async function attachLinkCards({ base, post, source, contentHTML }) {
+  const urls = new Set();
+
+  if (source === 'masto') {
+    // 1) 본문 <a>에서 추출
+    extractLinksFromHTML(contentHTML).forEach(u => urls.add(u));
+    // 2) 마스토든 status.card가 있으면 우선 추가
+    const st = base || post || {};
+    if (st.card && st.card.url) urls.add(st.card.url);
+  }
+
+  if (source === 'misskey') {
+    const text = (post?.text || '').toString();
+    extractLinksFromText(text).forEach(u => urls.add(u));
+  }
+
+  if (!urls.size) return ''; // 링크 없으면 아무 것도 안 붙임
+
+  // 렌더 대상 컨테이너 id
+  const wrapId = `lk-${(base?.id || post?.id || Math.random()).toString()}`;
+
+  // 스켈레톤 먼저
+  const skeleton = `<div class="link-cards" id="${wrapId}">
+    ${Array.from(urls).map(u => linkPreviewCache.get(u) || renderLinkCardSkeleton(u)).join('')}
+  </div>`;
+
+  // 후순위로 OG 로딩해서 교체
+  scheduleLinkTask(async () => {
+    const el = document.getElementById(wrapId);
+    if (!el) return;
+
+    const metas = await Promise.all(Array.from(urls).map(async (u) => {
+      if (linkPreviewCache.has(u)) return { url: u, html: linkPreviewCache.get(u) };
+      try {
+        const meta = await jfetch(`/api/og?url=${encodeURIComponent(u)}`);
+        if (meta?.ok) {
+          const html = renderLinkCardHTML(meta);
+          linkPreviewCache.set(u, html);
+          return { url: u, html };
+        }
+      } catch {}
+      // 실패 시 스켈레톤 유지
+      return { url: u, html: renderLinkCardSkeleton(u) };
+    }));
+
+    el.innerHTML = metas.map(m => m.html).join('');
+  });
+
+  return skeleton;
+}
+
 
 document.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('.likers-toggle');
@@ -908,6 +1069,9 @@ async function renderPostHTML(post, opts) {
     const contentHTML = renderEmojisToHTML(base?.content || '', mastoEmojiMap);
     const mediaHTML = renderMedia(base);
 
+    // 🔗 링크 카드: 본문 HTML에서 URL 추출 → 스켈레톤 즉시, 실제 OG는 후순위
+    const linkCardsHTML = await attachLinkCards({ base, post, source: 'masto', contentHTML });
+
     const faves = base?.favourites_count ?? 0;
     const boosts = base?.reblogs_count ?? 0;
     const replies = base?.replies_count ?? 0;
@@ -924,6 +1088,7 @@ async function renderPostHTML(post, opts) {
     const card = (htmlHead, inner) => `
       ${htmlHead}
       ${mediaHTML}
+      ${linkCardsHTML}
       <div class="reactions">
         <div class="rx-list" id="rx-${likeTargetId}"></div>
         <div class="rx-actions" id="ax-${likeTargetId}"></div>
@@ -931,7 +1096,6 @@ async function renderPostHTML(post, opts) {
       ${debugHTML}
       <div class="thread" data-for="${likeTargetId}" hidden></div>
     `;
-
 
     // 리액션은 후순위로 채움
     scheduleReactionTask(async () => {
@@ -1004,6 +1168,9 @@ async function renderPostHTML(post, opts) {
     const textHTML = renderEmojisToHTML(escapeHTML(text).replace(/\n/g, '<br>'), emojiList);
     const mediaHTML = renderMedia(post);
 
+    // 🔗 링크 카드: Misskey는 평문에서 URL 추출
+    const linkCardsHTML = await attachLinkCards({ base: null, post, source: 'misskey', contentHTML: textHTML });
+
     const rx = post?.reactions || {};
     const rxBadges = [];
     if (rx && typeof rx === 'object') {
@@ -1019,7 +1186,6 @@ async function renderPostHTML(post, opts) {
             ${parsed.char}
             <span class="meta" style="opacity:.7;margin-left:2px;">${count}</span>
           </span>`);
-
           continue;
         }
         let em = (emojiIndexCache.get(normHost(host))?.byExact.get(parsed.name))
@@ -1038,7 +1204,6 @@ async function renderPostHTML(post, opts) {
           <img src="${em.url}" alt=":${parsed.name}:" loading="lazy" decoding="async" fetchpriority="low" />
           <span class="meta" style="opacity:.7;margin-left:2px;">${count}</span>
         </span>`);
-
       }
     }
 
@@ -1053,6 +1218,7 @@ async function renderPostHTML(post, opts) {
         </div>
         <div class="content">${textHTML}</div>
         ${mediaHTML}
+        ${linkCardsHTML}
         <div class="reactions">${rxBadges.join('')}</div>
       </article>
     `;
@@ -1060,6 +1226,7 @@ async function renderPostHTML(post, opts) {
 
   return `<article class="post"><div class="content">Unsupported post</div></article>`;
 }
+
 
 /* =========================
    Timeline state & loaders
