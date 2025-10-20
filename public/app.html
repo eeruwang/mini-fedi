@@ -286,6 +286,57 @@
     .muted { 
       color: var(--muted); 
     }
+    /* === Mentions in content: chip look → neutral link chip === */
+    .content .mention-chip{
+      border-color: var(--border);
+      background: transparent;           /* 버튼 느낌 제거 */
+      padding: 2px 6px;
+    }
+    .content a.mention-chip{
+      text-decoration: none; color: inherit;
+    }
+    .content a.mention-chip:hover{
+      background: color-mix(in oklab, var(--card) 80%, transparent);
+    }
+
+    /* 멘션 옆 "댓글" 미니 링크 */
+    .mention-reply{
+      font-size: 12px;
+      opacity: .75;
+      margin-left: 6px;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+    }
+    .mention-reply:hover{ opacity: 1; }
+
+    /* 댓글 컴포저(슬라이드 다운) */
+    .composer {
+      overflow: hidden;
+      max-height: 0;
+      opacity: 0;
+      transition: max-height .28s ease, opacity .28s ease;
+      border-top: 1px dashed var(--border);
+      margin-top: 8px;
+    }
+    .composer.open {
+      max-height: 260px;   /* 필요시 조절 */
+      opacity: 1;
+    }
+    .reply-form { padding-top: 10px; }
+    .reply-form textarea{
+      width: 100%;
+      min-height: 86px;
+      resize: vertical;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--fg);
+      padding: 10px 12px;
+      font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    .reply-form .row{ display:flex; gap:8px; margin-top:8px; align-items:center; }
+
 
     .user-chip .avatar-mini,
     .reblog-banner .avatar-mini {
@@ -634,14 +685,14 @@ function transformContentAndCollectExternalLinks(html, post, source) {
 
   /** 멘션 칩 만들기 */
   function makeMentionChip(a) {
-    // a가 가진 정보로 기본 초기화
+    // 기본값
     let display = (a.textContent || '').replace(/^@/, '');
     let avatar = '';
     let acctUrl = a.getAttribute('href') || '';
+    let acct = '';
 
-    // mentions 매타데이터로 보강
+    // mentions 메타로 보강
     if (mentionsMeta.length) {
-      // href 매칭, 아니면 텍스트 포함으로 느슨 매칭
       const hit = mentionsMeta.find(m =>
         (m?.url && acctUrl && m.url === acctUrl) ||
         (m?.acct && (a.textContent||'').includes(m.acct)) ||
@@ -650,14 +701,31 @@ function transformContentAndCollectExternalLinks(html, post, source) {
       if (hit) {
         display = hit.display_name || hit.username || display;
         avatar  = hit.avatar_static || hit.avatar || '';
+        acctUrl = hit.url || acctUrl || '';
+        acct    = hit.acct || (hit.username ? `${hit.username}${(() => { try{ const u=new URL(hit.url); return '@'+u.host; }catch{return ''} })()}` : '');
       }
     }
 
-    const span = document.createElement('span');
-    span.className = 'mention-chip';
-    span.innerHTML = `${avatar ? `<img src="${avatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">` : ''}<span>${escapeHTML(display)}</span>`;
-    a.replaceWith(span);
+    // 칩을 a로(프로필 이동), 버튼 느낌 X
+    const chip = document.createElement('a');
+    chip.className = 'mention-chip';
+    if (acctUrl) {
+      chip.href = acctUrl; chip.target = '_blank'; chip.rel = 'noopener noreferrer';
+    }
+    if (acct) chip.dataset.acct = acct.startsWith('@') ? acct : ('@' + acct);
+    chip.innerHTML = `${avatar ? `<img src="${avatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">` : ''}<span>${escapeHTML(display)}</span>`;
+
+    // 멘션 옆에 "댓글" 소링크(클릭 시 컴포저 열고 @계정 미리 채워줌)
+    const reply = document.createElement('a');
+    reply.href = '#';
+    reply.className = 'mention-reply';
+    reply.textContent = '댓글';
+    reply.dataset.replyAcct = chip.dataset.acct || (a.textContent || '').trim();
+
+    a.replaceWith(chip);
+    chip.after(reply);
   }
+
 
   const externalLinks = [];
   root.querySelectorAll('a[href]').forEach(a => {
@@ -728,6 +796,14 @@ async function hydrateMisskeyMentions(containerId) {
       `${prof.avatar ? `<img src="${prof.avatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">` : ''}` +
       `<span>${escapeHTML(prof.display)}</span>`;
     chip.dataset.hydrated = '1';
+    // hydrateMisskeyMentions 마지막에 추가
+    const r = document.createElement('a');
+    r.href = '#';
+    r.className = 'mention-reply';
+    r.textContent = '댓글';
+    r.dataset.replyAcct = '@' + user + (host ? '@' + host : '');
+    chip.after(r);
+
   }));
 }
 
@@ -1247,6 +1323,17 @@ async function renderPostHTML(post, opts) {
       <div class="reactions">
         <div class="rx-list" id="rx-${likeTargetId}"></div>
         <div class="rx-actions" id="ax-${likeTargetId}"></div>
+      </div>
+
+      <!-- ✅ 댓글 입력창(초기 닫힘, 슬라이드다운) -->
+      <div class="composer" data-for="${likeTargetId}" hidden>
+        <form class="reply-form" data-id="${likeTargetId}">
+          <textarea placeholder="답글 작성…"></textarea>
+          <div class="row">
+            <button type="submit" class="btn">보내기</button>
+            <span class="meta">Ctrl/Cmd+Enter 전송</span>
+          </div>
+        </form>
       </div>
       ${debugHTML}
       <div class="thread" data-for="${likeTargetId}" hidden></div>
@@ -1800,6 +1887,86 @@ document.addEventListener('click', async (ev) => {
 });
 
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+
+// 댓글 링크 클릭 → 컴포저 열고 @계정 프리필
+document.addEventListener('click', (ev) => {
+  const a = ev.target.closest('.mention-reply');
+  if (!a) return;
+  ev.preventDefault();
+
+  // 소속 포스트 id 찾기
+  const article = a.closest('article');
+  if (!article) return;
+  const likeBtn = article.querySelector('.like-btn, .reply-toggle');
+  const postId = likeBtn?.dataset.id || article.getAttribute('data-post-id');
+  if (!postId) return;
+
+  const composer = article.querySelector(`.composer[data-for="${CSS.escape(postId)}"]`);
+  if (!composer) return;
+
+  // 열기 애니메이션
+  if (composer.hasAttribute('hidden')) composer.removeAttribute('hidden');
+  composer.classList.add('open');
+
+  const ta = composer.querySelector('textarea');
+  const acct = a.dataset.replyAcct || '';
+  if (ta) {
+    // 이미 같은 멘션이 없으면 프리펜드
+    if (acct && !ta.value.includes(acct)) {
+      ta.value = (acct + ' ' + ta.value).trim() + ' ';
+    }
+    ta.focus();
+    // 커서 끝
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+  }
+});
+
+// Ctrl/Cmd+Enter 전송
+document.addEventListener('keydown', (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+    const form = ev.target.closest?.('.reply-form');
+    if (form) form.requestSubmit();
+  }
+});
+
+// 전송 핸들러(백엔드 엔드포인트에 맞게 조정)
+document.addEventListener('submit', async (ev) => {
+  const form = ev.target.closest('.reply-form');
+  if (!form) return;
+  ev.preventDefault();
+
+  const id = form.getAttribute('data-id');
+  const ta = form.querySelector('textarea');
+  const text = (ta?.value || '').trim();
+  if (!id || !text) return;
+
+  const btn = form.querySelector('button[type="submit"]');
+  if (btn){ btn.disabled = true; btn.textContent = '전송 중…'; }
+
+  try {
+    // ⚠️ 서버에 맞게 경로/필드명 조정 (/api/reply 가정)
+    const res = await fetch('/api/reply', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, status: text })
+    });
+    if (!res.ok) throw new Error('reply failed: ' + res.status);
+
+    // 성공: 비우고 닫기
+    if (ta) ta.value = '';
+    const composer = form.closest('.composer');
+    if (composer) {
+      composer.classList.remove('open');
+      composer.setAttribute('hidden','');
+    }
+  } catch (e) {
+    console.error(e);
+    alert('댓글 전송에 실패했어요.');
+  } finally {
+    if (btn){ btn.disabled = false; btn.textContent = '보내기'; }
+  }
+});
 
 // infinite scroll (루트 마진 상향 + 쿨다운)
 let ioLock = false;
