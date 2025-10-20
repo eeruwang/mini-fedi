@@ -200,7 +200,7 @@ function resolveAliasFromMeta(meta: any, keyNorm: string) {
 }
 
 // ap/show (타임아웃 + KV 캐시) — fetchRetry 적용
-async function getApShow(env: Env, host: string, apUri: string) {
+export async function getApShow(env: Env, host: string, apUri: string, timeoutMs = 1500) {
   const digest = await sha256Hex(apUri);
   const key = `mk:note:${host}:${digest}`;
   const cached = await env.FEDIOAUTH_KV.get(key);
@@ -217,7 +217,7 @@ async function getApShow(env: Env, host: string, apUri: string) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ uri: apUri }),
     },
-    { timeoutMs: 1500, retries: 1, backoffMs: 250 },
+    { timeoutMs, retries: 0, backoffMs: 200 },
   );
 
   if (!res.ok) return { status: res.status, data: null };
@@ -324,7 +324,7 @@ function extractMisskeyNoteIdFromApUri(apUri: string): string | null {
 }
 
 // 메타 가져오기 — fetchRetry 적용
-async function getMisskeyMeta(env: Env, host: string) {
+async function getMisskeyMeta(env: Env, host: string, timeoutMs = 1200) {
   host = normalizeHost(host)!;
   if (metaMem.has(host)) return metaMem.get(host);
 
@@ -346,7 +346,7 @@ async function getMisskeyMeta(env: Env, host: string) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
     },
-    { timeoutMs: 1500, retries: 1, backoffMs: 250 },
+    { timeoutMs, retries: 0, backoffMs: 200 },
   );
 
   if (!res.ok) return null;
@@ -372,7 +372,7 @@ async function getEmojiUrlFromHost(env: Env, host: string, name: string): Promis
 
 
 // /api/notes/show — fetchRetry 적용
-async function getNotesShow(env: Env, host: string, noteId: string) {
+async function getNotesShow(env: Env, host: string, noteId: string, timeoutMs = 1500) {
   const key = `mk:note:byid:${host}:${noteId}`;
   const cached = await env.FEDIOAUTH_KV.get(key);
   if (cached) {
@@ -388,7 +388,7 @@ async function getNotesShow(env: Env, host: string, noteId: string) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ noteId }),
     },
-    { timeoutMs: 1500, retries: 1, backoffMs: 250 },
+    { timeoutMs, retries: 0, backoffMs: 200 },
   );
 
   if (!res.ok) return { status: res.status, data: null };
@@ -422,6 +422,13 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   // 병합 on/off, 병합 최대 개수
   const merge = url.searchParams.get("merge") !== "0"; // 기본 on
   const mergeLimit = Math.max(0, Number(url.searchParams.get("merge_limit") || "6")); // 기본 6
+  const budgetMs = Math.max(0, Number(url.searchParams.get("mk_budget_ms") || "0")); // 0=무한
+  const prefetchMeta = url.searchParams.get("mk_prefetch") !== "0"; // 기본 true
+
+  // ⏱️ 글로벌 예산 헬퍼
+  const hardStart = Date.now();
+  const timeLeft = () => (budgetMs ? Math.max(0, budgetMs - (Date.now() - hardStart)) : Infinity);
+  const budgetExpired = () => timeLeft() <= 0;
 
   // 1) Mastodon 홈 타임라인
   const mastoURL = new URL(`https://${apInst}/api/v1/timelines/home`);
@@ -481,21 +488,37 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     const jobs = allJobs.slice(0, mergeLimit);
 
     const uniqueHosts = Array.from(new Set(jobs.map((j) => j.host)));
-    await Promise.all(uniqueHosts.map((h) => getMisskeyMeta(env, h).catch(() => null)));
+    if (!budgetExpired() && prefetchMeta) {
+      // 예산 안에서만, 그리고 너무 오래 끌지 않게 race with timeout
+      const tl = timeLeft();
+      await Promise.race([
+        Promise.all(
+          uniqueHosts.map((h) =>
+            getMisskeyMeta(env, h, Math.min(600, tl)).catch(() => null),
+          ),
+        ),
+        new Promise((r) => setTimeout(r, Math.min(600, tl))), // 프리페치 상한 600ms
+      ]).catch(() => {});
+    }
+
 
     const run = limiter(6);
 
     await Promise.all(
       jobs.map((job) =>
         run(async () => {
+          if (budgetExpired()) return; // ⏹️ 예산 소진이면 합성 중단
           const st = job.st;
           triedCount++;
           try {
-            let apRes = await getApShow(env, job.host, job.apUri);
+            // 남은 예산을 기준으로 타임아웃을 줄여서 호출
+            const perTryTimeout = Math.max(350, Math.min(900, timeLeft()));
+            let apRes = await getApShow(env, job.host, job.apUri, perTryTimeout);
             let obj = apRes.data?.object || apRes.data || null;
 
             if (!obj && job.noteId) {
-              const { status, data } = await getNotesShow(env, job.host, job.noteId);
+              if (budgetExpired()) return;
+              const { status, data } = await getNotesShow(env, job.host, job.noteId, perTryTimeout);
               if (status === 200 && data) {
                 obj = data;
                 if (debug)
@@ -536,7 +559,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
               st._mkDebug = { ...(st._mkDebug || {}), reactions_raw: reactions };
             }
 
-            const meta = metaMem.get(job.host) || null;
+            const meta = prefetchMeta ? (metaMem.get(job.host) || null) : null;
 
             // ---------- 교체된 리액션 파싱 블록 (host 포함/정규화/트레이스) ----------
             type MkRx = {

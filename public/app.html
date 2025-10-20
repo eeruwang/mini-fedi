@@ -1163,6 +1163,16 @@ async function loadPage(initial=false) {
       source === 'masto' ? u.searchParams.set('max_id', cursor)
                         : u.searchParams.set('untilId', cursor);
     }
+    // 🚀 첫 페이지는 합성 작업에 시간 예산/스코프를 좁혀서 "먼저 빨리 보여주기"
+    if (initial) {
+      u.searchParams.set('merge', '1');          // 합성은 켜두되
+      u.searchParams.set('merge_limit', '3');    // 상단 몇 개만
+      u.searchParams.set('mk_budget_ms', '900'); // 서버 합성 총 예산 900ms
+      u.searchParams.set('mk_prefetch', '0');    // 호스트 메타 프리페치 스킵(아래 서버 코드와 연결)
+    } else {
+      // 이후 페이지는 합성 끄고 스크롤 속도 우선
+      u.searchParams.set('merge', '0');
+    }
     if (new URL(location.href).searchParams.get('debug') === '1' ||
         new URL(location.href).searchParams.get('debug') === '2') {
       u.searchParams.set('debug', '1');
