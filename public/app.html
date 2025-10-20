@@ -1426,7 +1426,7 @@ async function renderPostHTML(post, opts) {
     const host = getCookie('mk_host');
     const emojiList = await getMisskeyEmojis(host);
     const text = post?.text || '';
-    const textHTML = renderEmojisToHTML(escapeHTML(text).replace(/\n/g, '<br>'), emojiList);
+    let textHTML = renderEmojisToHTML(escapeHTML(text).replace(/\n/g, '<br>'), emojiList);
     // ✅ 추가: 평문 멘션을 칩으로 마킹(초기엔 아바타 없이)
     textHTML = chipifyPlainMentions(textHTML);
     // ✅ 2. content 블록 id 생성
@@ -1445,8 +1445,6 @@ async function renderPostHTML(post, opts) {
     // (4) 멘션 수화 스케줄
     defer(() => hydrateMisskeyMentions(contentId));
     // 🔗 링크 카드까지 만든 직후 어딘가 좋습니다.
-    defer(() => hydrateMastoMentions(contentId));
-
     
     const rx = post?.reactions || {};
     const rxBadges = [];
