@@ -1265,7 +1265,6 @@ async function buildReactionsHTMLForMasto({ base, post, isMine, faves, boosts, r
   }
 
   const likeTargetId = base?.id || post?.id;
-  const contentId = `cnt-${likeTargetId}`;  // ← 추가
   reactionsHTML += `
     <button class="badge reply-toggle" data-id="${likeTargetId}" title="Show replies">💬 댓글 ${replies}</button>
     <span class="badge">♺ ${boosts}</span>
@@ -1328,6 +1327,7 @@ async function renderPostHTML(post, opts) {
     const replies = base?.replies_count ?? 0;
 
     const likeTargetId = base?.id || post?.id;
+    const contentId = `cnt-${likeTargetId}`;
 
     const debugObj = (base && base._mkDebug) || (post && post._mkDebug);
     const debugOn = new URL(location.href).searchParams.get('debug') === '1'
@@ -1370,6 +1370,8 @@ async function renderPostHTML(post, opts) {
         container.innerHTML = reactionsHTML;
       } catch {}
     });
+    // 멘션 칩 수화(아바타/표시이름 주입)
+    defer(() => hydrateMastoMentions(contentId));
 
     if (isReblog) {
       const boosterName = booster?.display_name || booster?.username || '';
