@@ -1433,6 +1433,122 @@ io = new IntersectionObserver(async (entries) => {
 }, { rootMargin: '1200px' });
 io.observe(document.getElementById('sentinel'));
 
+// ===== Lightweight Profiler (toggle with ?prof=1) =====
+const PROF_ON = new URL(location.href).searchParams.get('prof') === '1';
+const PROF = {
+  t: {},    // named timers
+  sums: { batchRender:0, batchCount:0, rxTotal:0, rxCount:0, emojiFetchMs:0, emojiHits:0, emojiMiss:0 },
+  lastFetchMs: null,
+  lastServerMergeMs: null,
+  lastServerCounters: null,
+};
+function tick(name){ PROF.t[name] = performance.now(); }
+function tock(name){ const v = performance.now() - (PROF.t[name]||performance.now()); delete PROF.t[name]; return v; }
+
+// HUD
+let hud, fps=0, rafId;
+function startHUD(){
+  if (!PROF_ON) return;
+  hud = document.createElement('div');
+  hud.style.cssText = `
+    position:fixed;right:10px;bottom:10px;z-index:99999;
+    background:color-mix(in oklab, var(--card) 92%, transparent);
+    border:1px solid var(--border); padding:8px 10px; border-radius:10px;
+    font:12px/1.35 system-ui; color:var(--fg); box-shadow:var(--shadow);
+    max-width:320px; white-space:nowrap;`;
+  document.body.appendChild(hud);
+
+  // FPS
+  let frames = 0, last = performance.now();
+  function loop(){
+    frames++;
+    const now = performance.now();
+    if (now - last >= 1000){ fps = frames; frames = 0; last = now; drawHUD(); }
+    rafId = requestAnimationFrame(loop);
+  }
+  loop();
+}
+function drawHUD(){
+  if (!hud) return;
+  const s = PROF.sums;
+  const avgCard = s.batchCount ? (s.batchRender / s.batchCount) : 0;
+  const avgRx   = s.rxCount ? (s.rxTotal / s.rxCount) : 0;
+  hud.innerHTML = `
+    <div style="font-weight:700;margin-bottom:4px">Perf HUD</div>
+    <div>FPS: <b>${fps}</b></div>
+    <div>Fetch: <b>${Math.round(PROF.lastFetchMs||0)}ms</b>
+      ${PROF.lastServerMergeMs!=null ? ` | serverMerge <b>${PROF.lastServerMergeMs}</b>ms` : ''}</div>
+    <div>Render(batch): <b>${Math.round(s.batchRender)}ms</b> / ${s.batchCount} cards (avg <b>${Math.round(avgCard)}ms</b>)</div>
+    <div>Reactions: <b>${Math.round(s.rxTotal)}ms</b> / ${s.rxCount} cards (avg <b>${Math.round(avgRx)}ms</b>)</div>
+    <div>EmojiList: <b>${Math.round(s.emojiFetchMs)}ms</b> (hit ${s.emojiHits} / miss ${s.emojiMiss})</div>
+    <div style="margin-top:4px;opacity:.75">${PROF.lastServerCounters ? escapeHTML(PROF.lastServerCounters) : ''}</div>
+  `;
+}
+if (PROF_ON) startHUD();
+
+// patch jfetch to measure TTFB + server headers
+const _jfetch = jfetch;
+jfetch = async function(url, opts={}){
+  if (!PROF_ON) return _jfetch(url, opts);
+  tick('fetch');
+  const r = await fetch(url, { credentials:'include', ...opts });
+  const ms = tock('fetch');
+  PROF.lastFetchMs = ms;
+  PROF.lastServerMergeMs = Number(r.headers.get('x-mk-merge-ms') || '') || null;
+  const counters = r.headers.get('x-mk-merge-summary') || r.headers.get('x-mk-merge-counters');
+  PROF.lastServerCounters = counters;
+  const ct = r.headers.get('content-type') || '';
+  const body = ct.includes('application/json') ? await r.json() : await r.text();
+  if (!r.ok) {
+    const err = new Error(`${r.status} ${r.statusText}`); err.status=r.status; err.body=body; throw err;
+  }
+  drawHUD();
+  return body;
+};
+
+// measure Misskey emoji list fetch hit/miss
+const _getMisskeyEmojis = getMisskeyEmojis;
+getMisskeyEmojis = async function(host){
+  if (!PROF_ON) return _getMisskeyEmojis(host);
+  const hasLS = !!lsLoadEmoji(normHost(host||''));
+  if (!hasLS) tick('emojiFetch');
+  const res = await _getMisskeyEmojis(host);
+  if (!hasLS){
+    PROF.sums.emojiFetchMs += tock('emojiFetch');
+    PROF.sums.emojiMiss++;
+  } else {
+    PROF.sums.emojiHits++;
+  }
+  drawHUD();
+  return res;
+};
+
+// wrap renderPostHTML to time per-batch cost
+const _renderPostHTML = renderPostHTML;
+renderPostHTML = async function(post, opts){
+  if (!PROF_ON) return _renderPostHTML(post, opts);
+  tick('card');
+  const html = await _renderPostHTML(post, opts);
+  const dt = tock('card');
+  PROF.sums.batchRender += dt;
+  PROF.sums.batchCount++;
+  drawHUD();
+  return html;
+};
+
+// wrap buildReactionsHTMLForMasto to time reaction building
+const _buildRx = buildReactionsHTMLForMasto;
+buildReactionsHTMLForMasto = async function(args){
+  if (!PROF_ON) return _buildRx(args);
+  tick('rx');
+  const h = await _buildRx(args);
+  const dt = tock('rx');
+  PROF.sums.rxTotal += dt;
+  PROF.sums.rxCount++;
+  drawHUD();
+  return h;
+};
+
 // init
 (async function init() {
   await loadMe();
