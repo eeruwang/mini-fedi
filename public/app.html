@@ -684,21 +684,31 @@ function transformContentAndCollectExternalLinks(html, post, source) {
   const mentionsMeta = source === 'masto' && Array.isArray(post?.mentions) ? post.mentions : [];
 
   function makeMentionChip(a) {
+    // 기본 추출
     let display = (a.textContent || '').replace(/^@/, '');
-    let avatar = '';
     const acctUrl = a.getAttribute('href') || '';
-    // 1) 서버가 준 mentions 메타에 있으면 우선 사용
-    if (mentionsMeta.length) {
-      const hit = mentionsMeta.find(m =>
-        (m?.url && acctUrl && m.url === acctUrl) ||
-        (m?.acct && (a.textContent||'').includes(m.acct)) ||
-        (m?.username && (a.textContent||'').includes(m.username))
-      );
-      if (hit) {
-        display = hit.display_name || hit.username || display;
-        avatar  = hit.avatar_static || hit.avatar || '';
-      }
-    }
+
+    // 칩: 링크지만 버튼처럼 보이지 않게 (CSS 이미 있음)
+    const chip = document.createElement('a');
+    chip.className = 'mention-chip';
+    if (acctUrl) { chip.href = acctUrl; chip.target = '_blank'; chip.rel = 'noopener noreferrer'; }
+
+    // @user@host (텍스트 기준) → reply 프리필용
+    let acct = (a.textContent || '').trim();
+    if (!acct.startsWith('@')) acct = '@' + acct;
+
+    chip.innerHTML = `<span>${escapeHTML(display)}</span>`;
+    // 옆에 “댓글” 링크
+    const reply = document.createElement('a');
+    reply.href = '#';
+    reply.className = 'mention-reply';
+    reply.textContent = '댓글';
+    reply.dataset.replyAcct = acct;
+
+    a.replaceWith(chip);
+    chip.after(reply);
+  }
+
 
     // 2) 칩 생성 (+ 아바타 없으면 나중에 hydrate용 data-* 심기)
     const span = document.createElement('span');
@@ -730,79 +740,6 @@ function transformContentAndCollectExternalLinks(html, post, source) {
     }
   });
 
-  const outHTML = root.childNodes.length
-    ? Array.from(root.childNodes).map(n => n.outerHTML || n.textContent).join('')
-    : html;
-
-  return { html: outHTML, externalLinks };
-}
-
-  const tpl = document.createElement('template');
-  tpl.innerHTML = html;
-  const root = tpl.content;
-
-  // Mastodon의 mentions 배열 사용(표시이름/아바타 매칭용)
-  const mentionsMeta = source === 'masto' && Array.isArray(post?.mentions) ? post.mentions : [];
-
-  /** 멘션 칩 만들기 */
-  function makeMentionChip(a) {
-    // 기본값
-    let display = (a.textContent || '').replace(/^@/, '');
-    let avatar = '';
-    let acctUrl = a.getAttribute('href') || '';
-    let acct = '';
-
-    // mentions 메타로 보강
-    if (mentionsMeta.length) {
-      const hit = mentionsMeta.find(m =>
-        (m?.url && acctUrl && m.url === acctUrl) ||
-        (m?.acct && (a.textContent||'').includes(m.acct)) ||
-        (m?.username && (a.textContent||'').includes(m.username))
-      );
-      if (hit) {
-        display = hit.display_name || hit.username || display;
-        avatar  = hit.avatar_static || hit.avatar || '';
-        acctUrl = hit.url || acctUrl || '';
-        acct    = hit.acct || (hit.username ? `${hit.username}${(() => { try{ const u=new URL(hit.url); return '@'+u.host; }catch{return ''} })()}` : '');
-      }
-    }
-
-    // 칩을 a로(프로필 이동), 버튼 느낌 X
-    const chip = document.createElement('a');
-    chip.className = 'mention-chip';
-    if (acctUrl) {
-      chip.href = acctUrl; chip.target = '_blank'; chip.rel = 'noopener noreferrer';
-    }
-    if (acct) chip.dataset.acct = acct.startsWith('@') ? acct : ('@' + acct);
-    chip.innerHTML = `${avatar ? `<img src="${avatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">` : ''}<span>${escapeHTML(display)}</span>`;
-
-    // 멘션 옆에 "댓글" 소링크(클릭 시 컴포저 열고 @계정 미리 채워줌)
-    const reply = document.createElement('a');
-    reply.href = '#';
-    reply.className = 'mention-reply';
-    reply.textContent = '댓글';
-    reply.dataset.replyAcct = chip.dataset.acct || (a.textContent || '').trim();
-
-    a.replaceWith(chip);
-    chip.after(reply);
-  }
-
-
-  const externalLinks = [];
-  root.querySelectorAll('a[href]').forEach(a => {
-    const href = a.getAttribute('href') || '';
-    // 멘션이면 칩으로 교체하고, 링크카드 대상에서 제외
-    if (isMentionAnchor(a)) {
-      makeMentionChip(a);
-      return;
-    }
-    // 외부 http/https 링크만 카드 후보로
-    if (/^https?:\/\//i.test(href)) {
-      externalLinks.push(href);
-    }
-  });
-
-  // HTML 재조립
   const outHTML = root.childNodes.length
     ? Array.from(root.childNodes).map(n => n.outerHTML || n.textContent).join('')
     : html;
@@ -860,6 +797,37 @@ async function hydrateMisskeyMentions(containerId) {
   }));
 }
 
+// === (여기부터 추가) Mastodon 멘션 수화 ===
+async function resolveMastoProfileByURL(url) {
+  // 백엔드에 맞게 바꿔 쓰세요. (avatar/display_name 반환 가정)
+  try {
+    const data = await jfetch(`/api/masto/user?url=${encodeURIComponent(url)}`);
+    return {
+      display: (data?.display_name || data?.username || data?.acct || '') + '',
+      avatar:  (data?.avatar_static || data?.avatar || '') + ''
+    };
+  } catch {
+    return { display: '', avatar: '' };
+  }
+}
+
+async function hydrateMastoMentions(containerId) {
+  const root = document.getElementById(containerId);
+  if (!root) return;
+  const chips = root.querySelectorAll('.content a.mention-chip[href]:not([data-hydrated])');
+  await Promise.all(Array.from(chips).map(async chip => {
+    const href = chip.getAttribute('href');
+    if (!href) return;
+    const prof = await resolveMastoProfileByURL(href);
+    if (prof.avatar || prof.display) {
+      chip.innerHTML =
+        `${prof.avatar ? `<img src="${prof.avatar}" alt="" loading="lazy" decoding="async" fetchpriority="low">` : ''}` +
+        `<span>${escapeHTML(prof.display || chip.textContent || '')}</span>`;
+    }
+    chip.dataset.hydrated = '1';
+  }));
+}
+// === (추가 끝)
 
 
 /* =========================
@@ -1300,6 +1268,7 @@ async function buildReactionsHTMLForMasto({ base, post, isMine, faves, boosts, r
   }
 
   const likeTargetId = base?.id || post?.id;
+  const contentId = `cnt-${likeTargetId}`;  // ← 추가
   reactionsHTML += `
     <button class="badge reply-toggle" data-id="${likeTargetId}" title="Show replies">💬 댓글 ${replies}</button>
     <span class="badge">♺ ${boosts}</span>
@@ -1428,7 +1397,7 @@ async function renderPostHTML(post, opts) {
                 <div class="meta">${new Date(createdAt).toLocaleString()}</div>
               </div>
             </div>
-            <div class="content">${contentHTML}</div>
+            <div class="content" id="${contentId}">${contentHTML}</div>
             ${card('', '')}
           </div>
         </article>
@@ -1444,7 +1413,7 @@ async function renderPostHTML(post, opts) {
             <div class="meta">${new Date(createdAt).toLocaleString()}</div>
           </div>
         </div>
-        <div class="content">${contentHTML}</div>
+        <div class="content" id="${contentId}">${contentHTML}</div>
         ${card('', '')}
       </article>
     `;
@@ -1478,6 +1447,9 @@ async function renderPostHTML(post, opts) {
 
     // (4) 멘션 수화 스케줄
     defer(() => hydrateMisskeyMentions(contentId));
+    // 🔗 링크 카드까지 만든 직후 어딘가 좋습니다.
+    defer(() => hydrateMastoMentions(contentId));
+
     
     const rx = post?.reactions || {};
     const rxBadges = [];
